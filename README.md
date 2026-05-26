@@ -1,12 +1,10 @@
 # Deliberati
 
-![deliberati](header.jpg)
+![deliberati](preview.png)
 
 > *Like the Illuminati, but they actually show their work.*
 
-A self-hosted web app that routes your question to a council of LLMs, makes them anonymously peer-review each other, and has a designated Chairman synthesize the final answer. Think ChatGPT, except the answer comes from a structured debate rather than a single model's best guess.
-
-Based on the original [LLM Council](https://github.com/karpathy/LLMCouncil) concept by [Andrej Karpathy](https://x.com/karpathy), extended with persistent storage, search, memory, multi-user auth, and a production deployment path.
+A self-hosted app for persistent back-and-forth with a council of LLMs that deliberates and synthesizes better verdicts than any single model. Conversations are starred, searched, archived, summarized, clipped, and exported — building a knowledge base over time rather than a pile of throwaway chat windows.
 
 ---
 
@@ -33,6 +31,8 @@ Each query runs three stages:
 2. **Stage 2 — Peer review.** Each model receives the other models' responses with identities anonymized ("Response A", "Response B", ...). Models rank and critique without knowing who wrote what. Parsed rankings and raw evaluation text are both shown.
 
 3. **Stage 3 — Chairman synthesis.** A designated Chairman model reads all responses and rankings and writes the final answer.
+
+4. **Stage 4 — Follow-up (optional).** Continue the conversation with follow-up questions. The previous verdict is provided as context, so the council builds on what it already decided rather than starting cold.
 
 ---
 
@@ -137,4 +137,4 @@ See [docs/unraid-deployment.md](docs/unraid-deployment.md) for Unraid-specific n
 
 ## Credits
 
-This started as a Saturday hack by Andrej Karpathy to evaluate LLMs side by side while [reading books with LLMs](https://x.com/karpathy/status/1990577951671509438). I have modified this heavily to suit my needs, but the core idea is the same. Code is provided as-is. Ask your own LLM to modify it however you like.
+This is based on the original [LLM Council](https://github.com/karpathy/LLMCouncil) provided by [Andrej Karpathy](https://x.com/karpathy). I have modified this heavily to suit my needs, but the core idea is the same. Code is provided as-is. Ask your own LLM to modify it however you like.
