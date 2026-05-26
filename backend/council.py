@@ -1,11 +1,49 @@
 """3-stage LLM Council orchestration."""
 
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
+from .usage import build_usage_request, summarize_usage_requests
 
 
-async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
+class CouncilQuorumError(Exception):
+    """Raised when too few council models respond to continue meaningfully."""
+
+    def __init__(
+        self,
+        stage: str,
+        successful: int,
+        required: int,
+        attempted_models: List[str],
+    ):
+        self.stage = stage
+        self.successful = successful
+        self.required = required
+        self.attempted_models = attempted_models
+        super().__init__(
+            f"{stage} quorum failed: {successful} of {len(attempted_models)} "
+            f"models responded; {required} required."
+        )
+
+    def to_payload(self) -> Dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "successful": self.successful,
+            "required": self.required,
+            "attempted_models": self.attempted_models,
+            "message": str(self),
+        }
+
+
+def required_quorum(models: List[str]) -> int:
+    """Require at least two responders for council behavior, unless only one model is configured."""
+    return min(2, len(models))
+
+
+async def stage1_collect_responses(
+    user_query: str,
+    council_models: List[str] | None = None
+) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
@@ -17,8 +55,10 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
     """
     messages = [{"role": "user", "content": user_query}]
 
+    models = council_models or COUNCIL_MODELS
+
     # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(models, messages)
 
     # Format results
     stage1_results = []
@@ -26,15 +66,25 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
         if response is not None:  # Only include successful responses
             stage1_results.append({
                 "model": model,
-                "response": response.get('content', '')
+                "response": response.get('content', ''),
+                "usage": build_usage_request(
+                    kind="stage1",
+                    usage=response.get("usage"),
+                    model=model,
+                ),
             })
+
+    quorum = required_quorum(models)
+    if len(stage1_results) < quorum:
+        raise CouncilQuorumError("Stage 1", len(stage1_results), quorum, models)
 
     return stage1_results
 
 
 async def stage2_collect_rankings(
     user_query: str,
-    stage1_results: List[Dict[str, Any]]
+    stage1_results: List[Dict[str, Any]],
+    council_models: List[str] | None = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -93,9 +143,13 @@ FINAL RANKING:
 Now provide your evaluation and ranking:"""
 
     messages = [{"role": "user", "content": ranking_prompt}]
+    models = council_models or COUNCIL_MODELS
+
+    if len(stage1_results) < 2 and len(models) > 1:
+        raise CouncilQuorumError("Stage 2", len(stage1_results), 2, models)
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(models, messages)
 
     # Format results
     stage2_results = []
@@ -106,8 +160,17 @@ Now provide your evaluation and ranking:"""
             stage2_results.append({
                 "model": model,
                 "ranking": full_text,
-                "parsed_ranking": parsed
+                "parsed_ranking": parsed,
+                "usage": build_usage_request(
+                    kind="stage2",
+                    usage=response.get("usage"),
+                    model=model,
+                ),
             })
+
+    quorum = required_quorum(models)
+    if len(stage2_results) < quorum:
+        raise CouncilQuorumError("Stage 2", len(stage2_results), quorum, models)
 
     return stage2_results, label_to_model
 
@@ -115,7 +178,8 @@ Now provide your evaluation and ranking:"""
 async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]]
+    stage2_results: List[Dict[str, Any]],
+    chairman_model: str | None = None
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -157,20 +221,27 @@ Your task as Chairman is to synthesize all of this information into a single, co
 Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
 
     messages = [{"role": "user", "content": chairman_prompt}]
+    model = chairman_model or CHAIRMAN_MODEL
 
     # Query the chairman model
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    response = await query_model(model, messages)
 
     if response is None:
         # Fallback if chairman fails
         return {
-            "model": CHAIRMAN_MODEL,
-            "response": "Error: Unable to generate final synthesis."
+            "model": model,
+            "response": "Error: Unable to generate final synthesis.",
+            "usage": None,
         }
 
     return {
-        "model": CHAIRMAN_MODEL,
-        "response": response.get('content', '')
+        "model": model,
+        "response": response.get('content', ''),
+        "usage": build_usage_request(
+            kind="stage3",
+            usage=response.get("usage"),
+            model=model,
+        ),
     }
 
 
@@ -255,7 +326,27 @@ def calculate_aggregate_rankings(
     return aggregate
 
 
-async def generate_conversation_title(user_query: str) -> str:
+def build_council_usage_metadata(
+    stage1_results: List[Dict[str, Any]],
+    stage2_results: List[Dict[str, Any]],
+    stage3_result: Dict[str, Any],
+    extra_requests: Optional[List[Optional[Dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
+    """Build request-level and aggregate usage metadata for one council turn."""
+    requests: List[Optional[Dict[str, Any]]] = []
+    requests.extend(result.get("usage") for result in stage1_results)
+    requests.extend(result.get("usage") for result in stage2_results)
+    requests.append(stage3_result.get("usage"))
+    requests.extend(extra_requests or [])
+
+    normalized_requests = [request for request in requests if isinstance(request, dict)]
+    return {
+        "requests": normalized_requests,
+        "summary": summarize_usage_requests(normalized_requests),
+    }
+
+
+async def generate_conversation_title(user_query: str) -> Dict[str, Any]:
     """
     Generate a short title for a conversation based on the first user message.
 
@@ -274,12 +365,18 @@ Title:"""
 
     messages = [{"role": "user", "content": title_prompt}]
 
+    model = "google/gemini-2.5-flash"
+
     # Use gemini-2.5-flash for title generation (fast and cheap)
-    response = await query_model("google/gemini-2.5-flash", messages, timeout=30.0)
+    response = await query_model(model, messages, timeout=30.0)
 
     if response is None:
         # Fallback to a generic title
-        return "New Conversation"
+        return {
+            "title": "New Conversation",
+            "model": model,
+            "usage": None,
+        }
 
     title = response.get('content', 'New Conversation').strip()
 
@@ -290,10 +387,24 @@ Title:"""
     if len(title) > 50:
         title = title[:47] + "..."
 
-    return title
+    return {
+        "title": title or "New Conversation",
+        "model": model,
+        "usage": build_usage_request(
+            kind="title_generation",
+            usage=response.get("usage"),
+            model=model,
+        ),
+    }
 
 
-async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
+async def run_full_council(
+    user_query: str,
+    council_models: List[str] | None = None,
+    chairman_model: str | None = None,
+    bundle: Dict[str, Any] | None = None,
+    extra_usage_requests: Optional[List[Optional[Dict[str, Any]]]] = None,
+) -> Tuple[List, List, Dict, Dict]:
     """
     Run the complete 3-stage council process.
 
@@ -304,17 +415,17 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata)
     """
     # Stage 1: Collect individual responses
-    stage1_results = await stage1_collect_responses(user_query)
+    models = council_models or COUNCIL_MODELS
+    chairman = chairman_model or CHAIRMAN_MODEL
 
-    # If no models responded successfully, return error
-    if not stage1_results:
-        return [], [], {
-            "model": "error",
-            "response": "All models failed to respond. Please try again."
-        }, {}
+    stage1_results = await stage1_collect_responses(user_query, models)
 
     # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results)
+    stage2_results, label_to_model = await stage2_collect_rankings(
+        user_query,
+        stage1_results,
+        models
+    )
 
     # Calculate aggregate rankings
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
@@ -323,13 +434,28 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     stage3_result = await stage3_synthesize_final(
         user_query,
         stage1_results,
-        stage2_results
+        stage2_results,
+        chairman
     )
 
     # Prepare metadata
     metadata = {
         "label_to_model": label_to_model,
-        "aggregate_rankings": aggregate_rankings
+        "aggregate_rankings": aggregate_rankings,
+        "usage": build_council_usage_metadata(
+            stage1_results,
+            stage2_results,
+            stage3_result,
+            extra_requests=extra_usage_requests,
+        ),
     }
+
+    if bundle:
+        metadata["bundle"] = {
+            "id": bundle["id"],
+            "name": bundle["name"],
+            "chairman_model": bundle["chairman_model"],
+            "council_models": bundle["council_models"],
+        }
 
     return stage1_results, stage2_results, stage3_result, metadata

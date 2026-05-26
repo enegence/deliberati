@@ -1,0 +1,83 @@
+services:
+  webapp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: llm-council:latest
+    command: ["uv", "run", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    restart: unless-stopped
+    ports:
+      - "${COUNCIL_WEBAPP_PORT:-8002}:8002"
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      DATABASE_URL: postgresql://llm_council:llm_council@postgres:5432/llm_council
+      COUNCIL_DATA_ROOT: /var/lib/llm-council
+      COUNCIL_TRANSCRIPTS_DIR: /var/lib/llm-council/conversations
+      COUNCIL_EXPORTS_DIR: /var/lib/llm-council/exports
+      COUNCIL_OBSIDIAN_EXPORTS_DIR: /var/lib/llm-council/exports/obsidian
+      COUNCIL_BUNDLES_PATH: /var/lib/llm-council/model_bundles.json
+      COUNCIL_FRONTEND_DIST_DIR: /app/frontend/dist
+    volumes:
+      - council_data:/var/lib/llm-council
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: llm-council:latest
+    command: ["uv", "run", "python", "-m", "backend.worker"]
+    restart: unless-stopped
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      DATABASE_URL: postgresql://llm_council:llm_council@postgres:5432/llm_council
+      COUNCIL_DATA_ROOT: /var/lib/llm-council
+      COUNCIL_TRANSCRIPTS_DIR: /var/lib/llm-council/conversations
+      COUNCIL_EXPORTS_DIR: /var/lib/llm-council/exports
+      COUNCIL_OBSIDIAN_EXPORTS_DIR: /var/lib/llm-council/exports/obsidian
+      COUNCIL_BUNDLES_PATH: /var/lib/llm-council/model_bundles.json
+      COUNCIL_FRONTEND_DIST_DIR: /app/frontend/dist
+      LOCAL_LLM_BASE_URL: http://local-llm:11434
+    volumes:
+      - council_data:/var/lib/llm-council
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: llm_council
+      POSTGRES_PASSWORD: llm_council
+      POSTGRES_DB: llm_council
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_council -d llm_council"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  local-llm:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    restart: unless-stopped
+    ports:
+      - "${COUNCIL_LOCAL_LLM_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  council_data:
+  postgres_data:
+  ollama_data:

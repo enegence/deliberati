@@ -1,87 +1,140 @@
-# LLM Council
+# Deliberati
 
-![llmcouncil](header.jpg)
+![deliberati](header.jpg)
 
-The idea of this repo is that instead of asking a question to your favorite LLM provider (e.g. OpenAI GPT 5.1, Google Gemini 3.0 Pro, Anthropic Claude Sonnet 4.5, xAI Grok 4, eg.c), you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
+> *Like the Illuminati, but they actually show their work.*
 
-In a bit more detail, here is what happens when you submit a query:
+A self-hosted web app that routes your question to a council of LLMs, makes them anonymously peer-review each other, and has a designated Chairman synthesize the final answer. Think ChatGPT, except the answer comes from a structured debate rather than a single model's best guess.
 
-1. **Stage 1: First opinions**. The user query is given to all LLMs individually, and the responses are collected. The individual responses are shown in a "tab view", so that the user can inspect them all one by one.
-2. **Stage 2: Review**. Each individual LLM is given the responses of the other LLMs. Under the hood, the LLM identities are anonymized so that the LLM can't play favorites when judging their outputs. The LLM is asked to rank them in accuracy and insight.
-3. **Stage 3: Final response**. The designated Chairman of the LLM Council takes all of the model's responses and compiles them into a single final answer that is presented to the user.
+Based on the original [LLM Council](https://github.com/karpathy/LLMCouncil) concept by [Andrej Karpathy](https://x.com/karpathy), extended with persistent storage, search, memory, multi-user auth, and a production deployment path.
 
-## Vibe Code Alert
+---
 
-This project was 99% vibe coded as a fun Saturday hack because I wanted to explore and evaluate a number of LLMs side by side in the process of [reading books together with LLMs](https://x.com/karpathy/status/1990577951671509438). It's nice and useful to see multiple responses side by side, and also the cross-opinions of all LLMs on each other's outputs. I'm not going to support it in any way, it's provided here as is for other people's inspiration and I don't intend to improve it. Code is ephemeral now and libraries are over, ask your LLM to change it in whatever way you like.
+## Why a council?
+
+A single model optimizes for confident-sounding output. The council structure forces disagreement, then resolves it.
+
+**The High-Stakes Career Pivot** — Considering quitting a stable job to join a risky AI startup? One model says go, another says don't. The Chairman weighs both without the yes-man drift a single model defaults to.
+
+**Evaluating a Medical Symptom** — A confusing lab result before you see a specialist. You don't want one model's prior; you want models to challenge each other's differential diagnosis.
+
+**Reviewing a Contract** — An apartment lease or employment agreement with clauses you need to understand. Different models catch different things; the Chairman surfaces the real risks.
+
+**Sanity-Checking a Pet Theory** — Weeks of reading, a new angle on a historical or economic question. Independent agents poke holes from incompatible directions; weak arguments don't survive the cross-review.
+
+---
+
+## How it works
+
+Each query runs three stages:
+
+1. **Stage 1 — First opinions.** All council models answer independently. Responses are shown in a tab view so you can inspect each one.
+
+2. **Stage 2 — Peer review.** Each model receives the other models' responses with identities anonymized ("Response A", "Response B", ...). Models rank and critique without knowing who wrote what. Parsed rankings and raw evaluation text are both shown.
+
+3. **Stage 3 — Chairman synthesis.** A designated Chairman model reads all responses and rankings and writes the final answer.
+
+---
 
 ## Setup
 
-### 1. Install Dependencies
+### Quick start
 
-The project uses [uv](https://docs.astral.sh/uv/) for project management.
-
-**Backend:**
 ```bash
-uv sync
+git clone <repo>
+cd deliberati
+./setup.sh
+./start.sh
 ```
 
-**Frontend:**
+`setup.sh` checks for dependencies (`uv`, `npm`), prompts for your OpenRouter API key, and installs Python and JS packages.
+
+`start.sh` auto-finds available ports, starts Postgres via Docker if no `DATABASE_URL` is set, launches the backend, worker, and frontend, and waits for everything to be ready.
+
+### First launch
+
+Open the URL printed by `start.sh`. If no admin account exists yet, the app will prompt you to create one. That's the only setup step for auth — no seed scripts needed.
+
+### Manual `.env`
+
+Instead of running `setup.sh`, copy `.env.example` and fill it in:
+
 ```bash
-cd frontend
-npm install
-cd ..
+cp .env.example .env
 ```
 
-### 2. Configure API Key
-
-Create a `.env` file in the project root:
+Minimum required:
 
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
+### Configure the council
 
-### 3. Configure Models (Optional)
-
-Edit `backend/config.py` to customize the council:
+Edit `backend/config.py` to set which models form the council and which is Chairman:
 
 ```python
 COUNCIL_MODELS = [
     "openai/gpt-5.1",
     "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-sonnet-4-5",
     "x-ai/grok-4",
 ]
 
 CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
 ```
 
-## Running the Application
+Any model available on [openrouter.ai](https://openrouter.ai/) works. The council size is not fixed — add or remove entries freely.
 
-**Option 1: Use the start script**
+Model bundles can also be managed from the UI without editing config files.
+
+---
+
+## Docker / Production
+
+A `Dockerfile` and `docker-compose.example.yml` are included for production use (tested on Unraid, works anywhere Docker runs).
+
 ```bash
-./start.sh
+docker compose -f docker-compose.example.yml up --build
 ```
 
-**Option 2: Run manually**
+The compose file runs three containers: `webapp` (FastAPI + built frontend), `worker` (async post-processing), and `postgres`. The app is available on port `8002` by default.
 
-Terminal 1 (Backend):
 ```bash
-uv run python -m backend.main
+COUNCIL_WEBAPP_PORT=18002 docker compose -f docker-compose.example.yml up --build
 ```
 
-Terminal 2 (Frontend):
-```bash
-cd frontend
-npm run dev
-```
+The webapp container serves the built Vite frontend as static files — no separate frontend container in production.
 
-Then open http://localhost:5173 in your browser.
+See [docs/unraid-deployment.md](docs/unraid-deployment.md) for Unraid-specific notes and volume layout.
 
-## Tech Stack
+---
 
-- **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
-- **Frontend:** React + Vite, react-markdown for rendering
-- **Storage:** JSON files in `data/conversations/`
-- **Package Management:** uv for Python, npm for JavaScript
+## Features
+
+- **Multi-model council** — parallel queries, configurable council composition
+- **Anonymous peer review** — models rank each other without knowing who wrote what
+- **Chairman synthesis** — single clean final answer from a designated model
+- **Persistent conversations** — JSON transcripts on disk as source of truth
+- **Postgres metadata layer** — rolling memory, turn index, export jobs, semantic chunks, entity links
+- **Async worker** — background post-processing (memory summarization, search indexing, markdown/Obsidian exports)
+- **Semantic search** — search across conversations using pgvector embeddings
+- **Model bundles** — save and switch between named council configurations
+- **Multi-user auth** — local username/password, session cookies, admin/member roles
+- **Obsidian export** — conversations exported as linked markdown vaults
+
+---
+
+## Tech stack
+
+- **Backend:** FastAPI (Python 3.10+), async httpx, psycopg3, pgvector
+- **Frontend:** React + Vite, react-markdown
+- **Database:** Postgres with pgvector extension
+- **Package management:** uv (Python), npm (JS)
+- **LLM routing:** [OpenRouter](https://openrouter.ai/)
+
+---
+
+## Credits
+
+This started as a Saturday hack by Andrej Karpathy to evaluate LLMs side by side while [reading books with LLMs](https://x.com/karpathy/status/1990577951671509438). I have modified this heavily to suit my needs, but the core idea is the same. Code is provided as-is. Ask your own LLM to modify it however you like.

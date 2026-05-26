@@ -15,6 +15,15 @@ wheels/
 # Data files
 data/
 
+# Logs
+*.log
+
+# Archives
+*.zip
+
+# Browser screenshots
+brave_*.png
+
 # Frontend
 frontend/node_modules/
 frontend/dist/

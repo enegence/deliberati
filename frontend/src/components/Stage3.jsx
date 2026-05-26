@@ -1,7 +1,7 @@
-import ReactMarkdown from 'react-markdown';
+import HighlightedMarkdown from './HighlightedMarkdown';
 import './Stage3.css';
 
-export default function Stage3({ finalResponse }) {
+export default function Stage3({ finalResponse, highlightQuery = '' }) {
   if (!finalResponse) {
     return null;
   }
@@ -14,7 +14,9 @@ export default function Stage3({ finalResponse }) {
           Chairman: {finalResponse.model.split('/')[1] || finalResponse.model}
         </div>
         <div className="final-text markdown-content">
-          <ReactMarkdown>{finalResponse.response}</ReactMarkdown>
+          <HighlightedMarkdown highlightQuery={highlightQuery}>
+            {finalResponse.response}
+          </HighlightedMarkdown>
         </div>
       </div>
     </div>
