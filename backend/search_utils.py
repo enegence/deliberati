@@ -6,6 +6,12 @@ import re
 from typing import Any, Dict, List, Sequence
 
 SNIPPET_RADIUS = 160
+SEARCH_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+    "has", "have", "how", "i", "in", "is", "it", "of", "on", "or", "our",
+    "that", "the", "their", "this", "to", "was", "were", "what", "when",
+    "where", "which", "who", "why", "with", "you", "your",
+}
 
 
 def normalize_query(query: str) -> str:
@@ -26,6 +32,33 @@ def query_terms(query: str) -> list[str]:
     return terms
 
 
+def significant_query_terms(query: str) -> list[str]:
+    """Return query terms useful for lexical retrieval."""
+    terms = [
+        term
+        for term in query_terms(query)
+        if len(term) > 1 and term not in SEARCH_STOPWORDS
+    ]
+    return terms or query_terms(query)
+
+
+def query_matches_text(query: str, *texts: str) -> bool:
+    """Return True when texts contain the phrase or every significant term."""
+    normalized_query = normalize_query(query).lower()
+    if not normalized_query:
+        return False
+
+    lowered_texts = [(text or "").lower() for text in texts]
+    combined_text = " ".join(lowered_texts)
+    if normalized_query in combined_text:
+        return True
+
+    terms = significant_query_terms(normalized_query)
+    if not terms:
+        return False
+    return all(term in combined_text for term in terms)
+
+
 def build_match_snippet(text: str, query: str, radius: int = SNIPPET_RADIUS) -> str:
     """Build a compact excerpt around the first query hit."""
     compact = " ".join((text or "").split())
@@ -38,7 +71,7 @@ def build_match_snippet(text: str, query: str, radius: int = SNIPPET_RADIUS) -> 
 
     match_index = lowered_text.find(lowered_query) if lowered_query else -1
     if match_index < 0:
-        for term in query_terms(normalized_query):
+        for term in significant_query_terms(normalized_query):
             match_index = lowered_text.find(term)
             if match_index >= 0:
                 break
@@ -82,7 +115,8 @@ def compute_match_score(
 
     lowered_title = (title or "").lower()
     lowered_chunk = (chunk_text or "").lower()
-    terms = query_terms(normalized_query)
+    combined_text = f"{lowered_title} {lowered_chunk}"
+    terms = significant_query_terms(normalized_query)
 
     score = 0.0
 
@@ -90,6 +124,13 @@ def compute_match_score(
         score += 10.0
     if normalized_query in lowered_chunk:
         score += 7.0
+
+    matched_terms = [term for term in terms if term in combined_text]
+    if terms and len(matched_terms) < len(terms) and normalized_query not in combined_text:
+        return 0.0
+
+    if terms:
+        score += (len(matched_terms) / len(terms)) * 4.0
 
     for term in terms:
         title_count = lowered_title.count(term)

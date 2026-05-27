@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import uuid
@@ -52,6 +52,19 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def csrf_middleware(request: Request, call_next):
+    """Require a double-submit CSRF token for authenticated write requests."""
+    try:
+        auth.validate_csrf_request(request)
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+    return await call_next(request)
+
+
 class CreateConversationRequest(BaseModel):
     """Request to create a new conversation."""
     pass
@@ -66,6 +79,12 @@ class AuthRequest(BaseModel):
 class CreateUserRequest(AuthRequest):
     """Request payload for admin-created local users."""
     role: str = "member"
+
+
+class UpdateUserRequest(BaseModel):
+    """Request payload for admin-managed local users."""
+    role: Optional[str] = None
+    disabled: Optional[bool] = None
 
 
 class SendMessageRequest(BaseModel):
@@ -506,10 +525,12 @@ async def health():
 
 
 @app.get("/api/auth/status")
-async def auth_status(request: Request):
+async def auth_status(request: Request, response: Response):
     """Return auth setup status and the current user if logged in."""
     status = auth.auth_status()
     current_user = auth.get_optional_user(request) if status["configured"] else None
+    if current_user and not request.cookies.get(auth.CSRF_COOKIE_NAME):
+        auth.set_csrf_cookie(response)
     return {
         **status,
         "user": auth.public_user(current_user) if current_user else None,
@@ -559,9 +580,37 @@ async def logout(request: Request, response: Response):
 
 
 @app.get("/api/auth/me")
-async def current_user(user: Dict[str, Any] = Depends(auth.require_user)):
+async def current_user(
+    request: Request,
+    response: Response,
+    user: Dict[str, Any] = Depends(auth.require_user),
+):
     """Return the current authenticated user."""
+    if not request.cookies.get(auth.CSRF_COOKIE_NAME):
+        auth.set_csrf_cookie(response)
     return {"user": auth.public_user(user)}
+
+
+@app.get("/api/users")
+async def list_users(admin_user: Dict[str, Any] = Depends(auth.require_admin)):
+    """List local users. Admin-only."""
+    del admin_user
+    return {
+        "users": [
+            auth.public_user(user) | {"disabled_at": user.get("disabled_at")}
+            for user in postgres_store.list_users()
+        ]
+    }
+
+
+@app.get("/api/system/status")
+async def system_status(admin_user: Dict[str, Any] = Depends(auth.require_admin)):
+    """Return operational status for the local instance. Admin-only."""
+    del admin_user
+    return {
+        "database_configured": postgres_store.is_configured(),
+        "export_jobs": postgres_store.get_export_job_status_summary(),
+    }
 
 
 @app.post("/api/users")
@@ -580,6 +629,49 @@ async def create_user(
     if user is None:
         raise HTTPException(status_code=400, detail="Could not create user")
     return {"user": auth.public_user(user)}
+
+
+@app.patch("/api/users/{user_id}")
+async def update_user(
+    user_id: str,
+    request: UpdateUserRequest,
+    admin_user: Dict[str, Any] = Depends(auth.require_admin),
+):
+    """Update a local user's role or enabled state. Admin-only."""
+    target_user = postgres_store.get_user_by_id(user_id)
+    if target_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    role = request.role.strip().lower() if request.role is not None else None
+    if role is not None and role not in {"admin", "member"}:
+        raise HTTPException(status_code=400, detail="Role must be admin or member")
+
+    disabling = request.disabled is True and target_user.get("disabled_at") is None
+    demoting_enabled_admin = (
+        role == "member"
+        and target_user.get("role") == "admin"
+        and target_user.get("disabled_at") is None
+    )
+
+    if target_user["id"] == admin_user["id"] and request.disabled is True:
+        raise HTTPException(status_code=400, detail="You cannot disable your own account")
+
+    if (disabling or demoting_enabled_admin) and target_user.get("role") == "admin":
+        if postgres_store.count_enabled_admins() <= 1:
+            raise HTTPException(status_code=400, detail="At least one enabled admin is required")
+
+    updated = postgres_store.update_user(
+        user_id,
+        role=role,
+        disabled=request.disabled,
+    )
+    if updated is None:
+        raise HTTPException(status_code=400, detail="Could not update user")
+
+    if request.disabled is True:
+        postgres_store.delete_user_sessions(user_id)
+
+    return {"user": auth.public_user(updated) | {"disabled_at": updated.get("disabled_at")}}
 
 
 @app.get("/", include_in_schema=False)

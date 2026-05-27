@@ -28,19 +28,31 @@ def ensure_obsidian_export_dirs() -> dict[str, Path]:
     }
 
 
-def get_conversation_export_paths(conversation_id: str) -> dict[str, Path]:
+def _owner_index_filename(owner_user_id: str | None) -> str:
+    """Return the owner-scoped conversations index filename."""
+    if not owner_user_id:
+        return "conversations.md"
+    return f"conversations-{owner_user_id}.md"
+
+
+def get_conversation_export_paths(
+    conversation_id: str,
+    owner_user_id: str | None = None,
+) -> dict[str, Path]:
     """Return deterministic export paths for one conversation."""
     directories = ensure_obsidian_export_dirs()
     return {
         "conversation": directories["conversations"] / f"{conversation_id}.md",
         "highlights": directories["highlights"] / f"{conversation_id}.md",
-        "index": directories["indexes"] / "conversations.md",
+        "index": directories["indexes"] / _owner_index_filename(owner_user_id),
     }
 
 
 def conversation_exports_missing(conversation_id: str) -> bool:
     """Return True when the primary markdown exports for a conversation do not exist yet."""
-    paths = get_conversation_export_paths(conversation_id)
+    conversation = storage.get_conversation(conversation_id)
+    owner_user_id = conversation.get("owner_user_id") if conversation else None
+    paths = get_conversation_export_paths(conversation_id, owner_user_id)
     return not paths["conversation"].exists() or not paths["highlights"].exists()
 
 
@@ -206,6 +218,7 @@ def render_conversation_markdown(
     conversation: Dict[str, Any],
     memory: Dict[str, Any],
     turn_index: List[Dict[str, Any]],
+    index_filename: str = "conversations.md",
 ) -> str:
     """Render the main conversation markdown note."""
     conversation_id = conversation["id"]
@@ -221,7 +234,7 @@ def render_conversation_markdown(
         f"- Rolling memory source: `{memory.get('source', 'unknown')}`",
         f"- Rolling memory updated: `{memory.get('updated_at', '')}`",
         "",
-        f"[Highlights](../highlights/{conversation_id}.md) | [Conversations Index](../indexes/conversations.md)",
+        f"[Highlights](../highlights/{conversation_id}.md) | [Conversations Index](../indexes/{index_filename})",
         "",
         "## Rolling Summary",
         "",
@@ -332,16 +345,23 @@ def render_highlights_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_conversations_index_markdown() -> str:
-    """Render the global conversations index note."""
-    active_conversations = storage.list_conversations(archived=False)
-    archived_conversations = storage.list_conversations(archived=True)
+def render_conversations_index_markdown(owner_user_id: str | None = None) -> str:
+    """Render an owner-scoped conversations index note."""
+    active_conversations = storage.list_conversations(
+        archived=False,
+        owner_user_id=owner_user_id,
+    )
+    archived_conversations = storage.list_conversations(
+        archived=True,
+        owner_user_id=owner_user_id,
+    )
     updated_at = datetime.now(timezone.utc).isoformat()
 
     lines = [
         "# LLM Council Conversations",
         "",
         f"- Updated: `{updated_at}`",
+        f"- Owner: `{owner_user_id or 'legacy-unowned'}`",
         f"- Active conversations: {len(active_conversations)}",
         f"- Archived conversations: {len(archived_conversations)}",
         "",
@@ -394,13 +414,20 @@ def export_conversation_markdown(
     if conversation is None:
         raise ValueError(f"Conversation {conversation_id} not found")
 
-    paths = get_conversation_export_paths(conversation_id)
+    owner_user_id = conversation.get("owner_user_id")
+    paths = get_conversation_export_paths(conversation_id, owner_user_id)
     memory = _resolve_memory_payload(conversation_id, conversation)
     turn_index = _resolve_turn_index(conversation_id, conversation)
+    index_filename = _owner_index_filename(owner_user_id)
 
-    conversation_markdown = render_conversation_markdown(conversation, memory, turn_index)
+    conversation_markdown = render_conversation_markdown(
+        conversation,
+        memory,
+        turn_index,
+        index_filename=index_filename,
+    )
     highlights_markdown = render_highlights_markdown(conversation, memory, turn_index)
-    conversations_index_markdown = render_conversations_index_markdown()
+    conversations_index_markdown = render_conversations_index_markdown(owner_user_id)
 
     paths["conversation"].write_text(conversation_markdown, encoding="utf-8")
     paths["highlights"].write_text(highlights_markdown, encoding="utf-8")
@@ -429,10 +456,21 @@ def export_conversation_markdown(
             "artifact_type": "obsidian_conversations_index_markdown",
             "file_path": _relative_export_path(paths["index"]),
             "metadata": {
-                "scope": "global",
-                "active_conversation_count": len(storage.list_conversations(archived=False)),
-                "archived_conversation_count": len(storage.list_conversations(archived=True)),
+                "scope": "owner",
+                "owner_user_id": owner_user_id,
+                "active_conversation_count": len(
+                    storage.list_conversations(
+                        archived=False,
+                        owner_user_id=owner_user_id,
+                    )
+                ),
+                "archived_conversation_count": len(
+                    storage.list_conversations(
+                        archived=True,
+                        owner_user_id=owner_user_id,
+                    )
+                ),
             },
-            "global": True,
+            "shared": True,
         },
     ]

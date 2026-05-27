@@ -32,14 +32,42 @@ echo ""
 
 PROJECT_ROOT="$(dirname "$(realpath "$0")")"
 
-if [ -z "${DATABASE_URL:-}" ] && [ -f "$PROJECT_ROOT/.env" ]; then
-    ENV_DATABASE_URL=$(grep -E '^DATABASE_URL=' "$PROJECT_ROOT/.env" 2>/dev/null | tail -n 1 | cut -d '=' -f 2-)
-    ENV_DATABASE_URL="${ENV_DATABASE_URL%\"}"
-    ENV_DATABASE_URL="${ENV_DATABASE_URL#\"}"
-    ENV_DATABASE_URL="${ENV_DATABASE_URL%\'}"
-    ENV_DATABASE_URL="${ENV_DATABASE_URL#\'}"
+read_dotenv_value() {
+    local key=$1
+    local value
+
+    if [ ! -f "$PROJECT_ROOT/.env" ]; then
+        return 1
+    fi
+
+    value=$(grep -E "^${key}=" "$PROJECT_ROOT/.env" 2>/dev/null | tail -n 1 | cut -d '=' -f 2-)
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+
+    if [ -n "$value" ]; then
+        echo "$value"
+        return 0
+    fi
+
+    return 1
+}
+
+if [ -z "${DATABASE_URL:-}" ]; then
+    ENV_DATABASE_URL=$(read_dotenv_value "DATABASE_URL" || true)
     if [ -n "$ENV_DATABASE_URL" ]; then
         export DATABASE_URL="$ENV_DATABASE_URL"
+    fi
+fi
+
+if [ -z "${DATABASE_URL:-}" ]; then
+    ENV_DATABASE_URL_FILE="${DATABASE_URL_FILE:-}"
+    if [ -z "$ENV_DATABASE_URL_FILE" ]; then
+        ENV_DATABASE_URL_FILE=$(read_dotenv_value "DATABASE_URL_FILE" || true)
+    fi
+    if [ -n "$ENV_DATABASE_URL_FILE" ] && [ -f "$ENV_DATABASE_URL_FILE" ]; then
+        export DATABASE_URL="$(tr -d '\r\n' < "$ENV_DATABASE_URL_FILE")"
     fi
 fi
 
@@ -126,7 +154,7 @@ echo "Starting Backend on http://localhost:$BACKEND_PORT ..."
 cd "$PROJECT_ROOT" || exit 1
 
 ALLOWED_ORIGINS="http://localhost:$FRONTEND_PORT" \
-uv run uvicorn backend.main:app \
+uv run python -m uvicorn backend.main:app \
     --host 127.0.0.1 \
     --port "$BACKEND_PORT" \
     --reload &
@@ -152,12 +180,19 @@ echo "Waiting for servers to become ready..."
 
 # Wait for backend
 for i in {1..25}; do
-    if ss -tuln 2>/dev/null | grep -q ":$BACKEND_PORT "; then
+    if curl -fsS "http://127.0.0.1:$BACKEND_PORT/api/health" >/dev/null 2>&1; then
         echo "✅ Backend is ready on http://localhost:$BACKEND_PORT"
         break
     fi
     sleep 0.5
 done
+
+if ! curl -fsS "http://127.0.0.1:$BACKEND_PORT/api/health" >/dev/null 2>&1; then
+    echo "❌ Backend did not become healthy on http://localhost:$BACKEND_PORT"
+    kill $BACKEND_PID $WORKER_PID 2>/dev/null
+    wait 2>/dev/null
+    exit 1
+fi
 
 # Wait for frontend
 for i in {1..20}; do

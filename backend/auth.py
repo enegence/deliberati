@@ -13,11 +13,19 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException, Request, Response
 
 from . import postgres_store
+from .config import CSRF_PROTECTION_ENABLED, SECURE_COOKIES
 
 SESSION_COOKIE_NAME = "llm_council_session"
+CSRF_COOKIE_NAME = "llm_council_csrf"
+CSRF_HEADER_NAME = "x-csrf-token"
 SESSION_DAYS = 30
 PBKDF2_ALGORITHM = "sha256"
 PBKDF2_ITERATIONS = 310_000
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+CSRF_EXEMPT_PATHS = {
+    "/api/auth/bootstrap",
+    "/api/auth/login",
+}
 
 
 def _b64encode(raw: bytes) -> str:
@@ -69,6 +77,11 @@ def hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def create_csrf_token() -> str:
+    """Create an opaque browser-visible CSRF token."""
+    return secrets.token_urlsafe(32)
+
+
 def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
     """Return non-sensitive user fields."""
     return {
@@ -107,10 +120,27 @@ def create_session(response: Response, user: Dict[str, Any]) -> None:
         max_age=SESSION_DAYS * 24 * 60 * 60,
         expires=SESSION_DAYS * 24 * 60 * 60,
         httponly=True,
-        secure=False,
+        secure=SECURE_COOKIES,
         samesite="lax",
         path="/",
     )
+    set_csrf_cookie(response)
+
+
+def set_csrf_cookie(response: Response, token: Optional[str] = None) -> str:
+    """Attach a browser-readable CSRF token cookie."""
+    csrf_token = token or create_csrf_token()
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=csrf_token,
+        max_age=SESSION_DAYS * 24 * 60 * 60,
+        expires=SESSION_DAYS * 24 * 60 * 60,
+        httponly=False,
+        secure=SECURE_COOKIES,
+        samesite="lax",
+        path="/",
+    )
+    return csrf_token
 
 
 def clear_session(request: Request, response: Response) -> None:
@@ -119,6 +149,26 @@ def clear_session(request: Request, response: Response) -> None:
     if token:
         postgres_store.delete_user_session(hash_session_token(token))
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
+
+
+def validate_csrf_request(request: Request) -> None:
+    """Validate double-submit CSRF token for authenticated unsafe requests."""
+    if not CSRF_PROTECTION_ENABLED:
+        return
+    if request.method.upper() not in UNSAFE_METHODS:
+        return
+    if request.url.path in CSRF_EXEMPT_PATHS:
+        return
+    if not request.cookies.get(SESSION_COOKIE_NAME):
+        return
+
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
+    header_token = request.headers.get(CSRF_HEADER_NAME)
+    if not cookie_token or not header_token:
+        raise HTTPException(status_code=403, detail="CSRF token required")
+    if not hmac.compare_digest(cookie_token, header_token):
+        raise HTTPException(status_code=403, detail="CSRF token mismatch")
 
 
 def get_optional_user(request: Request) -> Optional[Dict[str, Any]]:

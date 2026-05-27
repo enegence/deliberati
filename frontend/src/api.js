@@ -6,14 +6,37 @@ const API_BASE =
   import.meta.env.VITE_API_BASE_URL ??
   (import.meta.env.DEV ? 'http://localhost:8002' : '');
 
+function getCookie(name) {
+  const prefix = `${name}=`;
+  return document.cookie
+    .split(';')
+    .map((cookie) => cookie.trim())
+    .find((cookie) => cookie.startsWith(prefix))
+    ?.slice(prefix.length) || '';
+}
+
+function isUnsafeMethod(method = 'GET') {
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase());
+}
+
+function buildHeaders(options = {}) {
+  const headers = {
+    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(options.headers || {}),
+  };
+  const method = options.method || 'GET';
+  const csrfToken = getCookie('llm_council_csrf');
+  if (csrfToken && isUnsafeMethod(method)) {
+    headers['X-CSRF-Token'] = csrfToken;
+  }
+  return headers;
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
     ...options,
-    headers: {
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers || {}),
-    },
+    headers: buildHeaders(options),
   });
 
   if (!response.ok) {
@@ -74,6 +97,23 @@ export const api = {
     return request('/api/users', {
       method: 'POST',
       body: JSON.stringify({ username, password, role }),
+    });
+  },
+
+  /**
+   * List local users. Admin-only.
+   */
+  async listUsers() {
+    return request('/api/users');
+  },
+
+  /**
+   * Update a local user. Admin-only.
+   */
+  async updateUser(userId, updates) {
+    return request(`/api/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
     });
   },
 
@@ -241,9 +281,10 @@ export const api = {
       {
         method: 'POST',
         credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: buildHeaders({
+          method: 'POST',
+          body: true,
+        }),
         body: JSON.stringify({ content, bundle_id: bundleId }),
       }
     );

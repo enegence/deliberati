@@ -27,7 +27,7 @@ Important current nuance:
 - without Postgres, or before the worker catches up, follow-ups fall back to the latest Stage 3 verdict and then the new user message
 - this does not change or downgrade the conversation pane rolling summary behavior
 - the overview UI already derives tuned transcript-based fallback memory through `build_memory_record(conversation)` when stored Postgres memory is missing
-- that overview fallback is not currently reused on the live prompt path
+- that transcript-derived fallback is now also reused on the live prompt path when stored Postgres memory is missing
 
 ## Architecture Status
 
@@ -42,8 +42,9 @@ Current state relative to [architecture.md](docs/architecture.md):
 - [ ] semantic chunking / embeddings / retrieval are only partially implemented
 - [ ] entity/theme extraction is only partially implemented
 - [x] first-pass auth, multi-user isolation, and role-aware bundle permissions exist
-- [ ] worker retry/priority/coalescing behavior is not implemented
-- [ ] open-source hardening and secrets ergonomics are not finalized
+- [x] worker retry/priority/coalescing behavior is implemented
+- [x] secrets ergonomics, auth bootstrap docs, and self-hosting guidance exist in first-pass form
+- [ ] open-source release polish and Community Apps packaging are not finalized
 - [x] production-ready Dockerfiles / Unraid packaging are finalized
 - [x] follow-up prompting always has fresh rolling memory available before the next turn
 
@@ -77,7 +78,6 @@ Current state relative to [architecture.md](docs/architecture.md):
 - [x] Worker scaffold exists as a separate entrypoint
   - `backend.worker`
   - [start.sh](start.sh) launches backend, worker, and frontend together
-  - [cstart.sh](cstart.sh) launches backend, worker, and frontend on dynamic ports
   - [docker-compose.example.yml](docker-compose.example.yml) models `webapp`, `worker`, `postgres`, and optional `local-llm` services sharing one production image
 
 ### 2. Postgres App Integration
@@ -117,14 +117,16 @@ Current state relative to [architecture.md](docs/architecture.md):
 - [x] Markdown export jobs are implemented
   - deterministic conversation note
   - deterministic highlights note
-  - deterministic global conversations index note
+  - deterministic owner-scoped conversations index note
   - conversation-scoped artifact rows written to `export_artifacts`
   - existing conversations with missing exports are backfilled through the current startup / overview flow
   - archive / restore / rename operations enqueue export refreshes
 
-- [ ] Retry, coalescing, and priority behavior are not implemented
-  - failed jobs stay failed until manually retried or new jobs are enqueued
-  - there is no explicit priority separation between memory/index/export work
+- [x] Retry, coalescing, and priority behavior are implemented
+  - transient failures are retried up to a bounded attempt count with retry delay
+  - duplicate pending/running jobs for the same conversation/type are coalesced
+  - memory/index/export/search/entity jobs have explicit priority ordering
+  - stale running jobs are returned to pending after their worker lease expires
 
 - [x] Search/entity jobs beyond markdown export are implemented in first-pass form
   - `chunk_semantic`
@@ -139,7 +141,8 @@ Current state relative to [architecture.md](docs/architecture.md):
 - [x] First-pass export layout exists
   - `conversations/<conversation-id>.md`
   - `highlights/<conversation-id>.md`
-  - `indexes/conversations.md`
+  - owner-scoped `indexes/conversations-<owner-user-id>.md`
+  - legacy unowned `indexes/conversations.md`
 
 - [x] Reruns update the same files instead of creating duplicates
 
@@ -155,12 +158,17 @@ Current state relative to [architecture.md](docs/architecture.md):
 
 - [x] Stored chunks can be written into `semantic_chunks` without embeddings
 
+- [x] First-release search direction is explicit
+  - transcript JSON is the canonical indexing source
+  - retrieval is deterministic lexical search over transcript-derived chunks
+  - pgvector stays in the schema as future-ready storage, but embeddings are deferred
+
 - [x] Backend retrieval API exists
   - `GET /api/search?q=...&limit=...`
   - uses stored Postgres chunks when available
   - falls back to transcript-derived search when the chunk index is missing or Postgres is not configured
 
-- [ ] Embeddings are not implemented yet
+- [ ] Embeddings are not implemented yet and are not required for the first public self-hosted release
 
 - [x] Basic search UI exists in the frontend
   - sidebar search box
@@ -260,11 +268,13 @@ Current state relative to [architecture.md](docs/architecture.md):
 
 Current reality:
 
-- [ ] The app is still effectively single-tenant
-- [ ] There is no login flow
-- [ ] There are no user records, sessions, or roles
+- [x] The app now requires local auth when Postgres is configured
+- [x] First-admin bootstrap, login, logout, user records, session records, and roles exist
+- [x] Legacy unowned conversations are assigned to the first admin user on bootstrap/startup
 - [x] Conversations are filtered by authenticated owner in the API/UI
+- [x] Search, overview, entities, archive/restore/delete/rename, and message endpoints enforce owner access
 - [x] Bundle mutation is admin-only in the API and hidden from non-admin UI
+- [x] Markdown conversation exports are per-conversation and owner-scoped indexes avoid cross-user conversation listings
 
 Required end state before deployment:
 
@@ -304,17 +314,18 @@ Recommended implementation direction:
 Current reality:
 
 - [x] Container packaging works
-- [ ] Secrets ergonomics are basic env-var only
-- [ ] No documented auth bootstrap flow exists yet
-- [ ] No backup/restore guidance exists for user accounts plus Postgres plus transcript volume together
-- [ ] No reverse-proxy / TLS guidance exists yet
+- [x] Secrets support direct env vars and optional `*_FILE` env variants
+- [x] Basic auth bootstrap flow is documented in README
+- [x] Unraid-specific auth bootstrap and user-management notes exist
+- [x] Backup/restore guidance exists for user accounts plus Postgres plus transcript volume together
+- [x] Reverse-proxy / TLS exposure guidance exists
 
 Recommended direction:
 
 - Keep `OPENROUTER_API_KEY` env-var support as the default because that is normal for Unraid templates
-- Add optional file-based secret support for self-hosters:
+- File-based secret support exists for self-hosters:
   - `OPENROUTER_API_KEY_FILE`
-  - possibly `DATABASE_URL_FILE` if needed later
+  - `DATABASE_URL_FILE`
 - Document that on Unraid, secrets are typically handled one of three ways:
   - environment variables in the app template
   - bind-mounted files on the server passed into the container
@@ -330,14 +341,16 @@ Recommended direction:
 
 These parts exist in schema or deployment scaffolding, but not as real end-user features yet:
 
-- [ ] Semantic search pipeline is only partially complete
+- [ ] Semantic search pipeline is partially complete and currently lexical, not vector-semantic
   - `semantic_chunks` table exists
   - `pgvector` extension is enabled in schema
   - transcript-derived chunking exists
   - backend retrieval API exists
   - sidebar search UI exists
   - embedding column is currently fixed at `VECTOR(1536)`
-  - embeddings and transcript-view highlighting are still missing
+  - embeddings are still missing
+  - transcript-view highlighting exists for matched messages and terms
+  - first public release intentionally ships lexical retrieval unless embeddings are implemented later
 
 - [ ] Entities/themes knowledge layer
   - `knowledge_entities` and `conversation_entity_links` tables exist
@@ -363,9 +376,16 @@ These parts exist in schema or deployment scaffolding, but not as real end-user 
 
 This section is the execution queue. A fresh context should work from top to bottom unless the user explicitly reprioritizes.
 
+Current handoff recommendation:
+
+- treat auth, ownership, worker semantics, export isolation, and deployable compose/startup flow as complete enough to build on
+- focus new coding work on search quality, entity/theme quality, and final open-source/deployment cleanup
+- do not reopen major architecture decisions unless one of the remaining gaps forces it
+
 ### 1. Implement Authentication and Multi-User Isolation
 
-This is now the highest-priority unfinished slice before deployment.
+Core auth and ownership are implemented. The remaining work in this slice is
+hardened browser-security posture.
 
 - [x] Finalize the auth model
   - local username/password auth first
@@ -390,12 +410,20 @@ This is now the highest-priority unfinished slice before deployment.
   - logout
   - unauthorized states
   - hide bundle-management UI for non-admins
-- [ ] Decide whether exports are:
-  - per-user only
-  - per-conversation only with user ownership implied
-  - globally written but generated only from authorized conversations
-- [ ] Add admin user-management UI; backend `POST /api/users` exists
-- [ ] Tighten/document CSRF posture beyond SameSite=Lax session cookies
+- [x] Decide export isolation model
+  - conversation/highlight files are per-conversation with ownership implied by transcript owner
+  - generated conversation index files are owner-scoped under `indexes/conversations-<owner-user-id>.md`
+  - legacy unowned exports use `indexes/conversations.md`
+- [x] Add admin user-management UI
+  - admins can create users
+  - admins can list users
+  - admins can change roles
+  - admins can disable/enable users
+  - the API prevents disabling or demoting the last enabled admin
+- [x] Tighten/document CSRF posture beyond SameSite=Lax session cookies
+  - double-submit CSRF cookie/header is enforced for authenticated write requests
+  - session cookies are HttpOnly
+  - `COUNCIL_SECURE_COOKIES` enables Secure cookies behind HTTPS/TLS
 
 Acceptance criteria:
 
@@ -406,19 +434,20 @@ Acceptance criteria:
 
 ### 2. Finish Semantic Search Quality
 
-- [ ] Decide whether transcript chunking remains the canonical source
+- [x] Decide whether transcript chunking remains the canonical source
   - transcript JSON
-  - exported markdown
-  - or both
+  - exported markdown is output, not the search source
+  - future embedding chunks should still derive from transcripts
 
-- [ ] Choose an embedding path
+- [x] Choose an embedding path
+  - embeddings are deferred for the first release
+  - likely future options remain:
   - OpenRouter-hosted embeddings
   - local embedding model
-  - metadata-only first pass if vectors are deferred
 
-- [ ] Decide whether embeddings are required before the first public open-source release
-  - acceptable answer: ship deterministic lexical search first if result quality is good enough
-  - unacceptable answer: leave the current partial state undocumented and ambiguous
+- [x] Decide whether embeddings are required before the first public open-source release
+  - deterministic lexical search is the first-release behavior
+  - embeddings are not required before the first public open-source release
 
 - [ ] Improve the frontend search experience
   - matched substrings now highlight inside the full transcript view
@@ -430,7 +459,9 @@ Acceptance criteria:
   - duplicate chunk hits from the same message are deduped
   - result snippets are centered around the first match
 
-- [ ] Revisit whether `VECTOR(1536)` should stay fixed before locking in an embedding provider
+- [x] Revisit whether `VECTOR(1536)` should stay fixed before locking in an embedding provider
+  - keep the nullable `VECTOR(1536)` column as future-ready schema for now
+  - do not rely on it for first-release search behavior
 
 Acceptance criteria:
 
@@ -462,11 +493,14 @@ Acceptance criteria:
 
 ### 4. Harden Worker Job Semantics
 
-- [ ] Add retry behavior for transient worker failures
-- [ ] Add explicit job coalescing where duplicate jobs are wasteful
-- [ ] Add priority ordering so `refresh_memory` stays ahead of lower-value indexing/export work when needed
-- [ ] Decide whether job attempts / last_error / retry_after need first-class schema fields
-- [ ] Add observability for stuck or repeatedly failing jobs
+- [x] Add retry behavior for transient worker failures
+- [x] Add explicit job coalescing where duplicate jobs are wasteful
+- [x] Add priority ordering so `refresh_memory` stays ahead of lower-value indexing/export work when needed
+- [x] Decide whether job attempts / last_error / retry_after need first-class schema fields
+  - existing `attempts` and `error` fields are used
+  - `priority` and `retry_after` are first-class schema fields
+- [x] Add observability for stuck or repeatedly failing jobs
+  - admin-only `GET /api/system/status` exposes delayed, stale, and recently failed queue state
 
 Acceptance criteria:
 
@@ -483,18 +517,18 @@ Acceptance criteria:
 
 ### 6. Open-Source and Self-Hosting Hardening
 
-- [ ] Add secrets ergonomics
+- [x] Add secrets ergonomics
   - support `*_FILE` env variants for sensitive values
   - document recommended Unraid usage
-- [ ] Add admin bootstrap flow
+- [x] Add admin bootstrap flow
   - first admin creation path
   - behavior when no users exist yet
-- [ ] Document backup/restore
+- [x] Document backup/restore
   - transcripts volume
   - exports volume
   - Postgres data
   - secret material
-- [ ] Document safe exposure posture
+- [x] Document safe exposure posture
   - LAN-only default
   - reverse proxy / TLS guidance
   - warnings about direct public exposure without additional auth hardening
@@ -502,6 +536,10 @@ Acceptance criteria:
   - sample env docs
   - example compose env expectations
   - no accidental secret leakage in docs or examples
+- [ ] Add release-facing deployment confidence checks
+  - smoke-test `./start.sh` from a fresh clone with `.env`
+  - smoke-test `docker compose -f docker-compose.example.yml up --build`
+  - document any remaining host prerequisites that break the one-script expectation
 
 ### 7. Deployment Packaging Follow-Through
 
@@ -520,25 +558,23 @@ Packaging is implemented and verified, but deployment documentation still needs 
   - worker startup
   - old-conversation backfill
 - [x] Document the expected Unraid deployment pattern
-- [ ] Revisit Unraid docs after auth/admin bootstrap exists
+- [x] Revisit Unraid docs after auth/admin bootstrap exists
+- [ ] Create Unraid Community Apps template metadata and decide the final app/worker/Postgres template split
 
 ## Recommended Build Order
 
 If work resumes from this document, the recommended sequence is:
 
-1. Implement authentication, user ownership, and admin/member bundle permissions.
-2. Finish semantic search quality and lock the indexing/embedding direction.
-3. Finish entity/theme quality or explicitly narrow it to metadata-only use.
-4. Harden worker retry/coalescing/priority behavior.
-5. Add secrets ergonomics, admin bootstrap, and open-source self-hosting docs.
-6. Revisit Unraid deployment docs once auth/bootstrap and secrets handling are complete.
+1. Finish semantic search quality and lock the sidebar-vs-workspace UX decision.
+2. Finish entity/theme quality or explicitly narrow it to metadata-only use.
+3. Decide whether local summarizer/embedder integration is in scope for the first public release.
+4. Finish open-source/deployment cleanup: repo defaults, smoke tests, published image strategy, and Community Apps metadata.
 
 Reasoning:
 
-- deployment packaging now works, so the highest remaining product risk is not containers but tenant isolation and authorization
-- shipping multi-user support later would force rework across API, storage, search, exports, and UI
-- search and entity quality should be improved after ownership boundaries exist so result filtering is correct from the start
-- worker resilience matters before broader self-hosted adoption
+- tenant isolation and authorization now exist; the highest remaining product risk is quality/polish, not missing core architecture
+- search and entity quality can now be improved against established ownership boundaries
+- the repo already has a viable local/dev and compose deployment story, but it still needs final smoke-test confidence and distribution polish
 - Unraid/open-source docs should describe the actual auth and secret story, not a temporary one
 
 ## Fresh-Context Handoff
@@ -557,8 +593,8 @@ If a new context resumes this work, it should do these things first:
    - [frontend/src/App.jsx](frontend/src/App.jsx)
    - [frontend/src/components/Sidebar.jsx](frontend/src/components/Sidebar.jsx)
    - [frontend/src/components/ChatInterface.jsx](frontend/src/components/ChatInterface.jsx)
-4. Treat deployment packaging as complete enough for development and do not spend more time on it until the auth/search/entity/security items above are addressed.
-5. Start with Outstanding Work item 1 unless the user explicitly reprioritizes.
+4. Treat deployment packaging as complete enough for development; remaining deployment work is smoke-test confidence, published-image strategy, and Community Apps metadata.
+5. Start with Outstanding Work item 2 unless the user explicitly reprioritizes.
 
 ## Acceptance Checklist
 
@@ -574,6 +610,6 @@ Use this as the high-level completion gate:
 - [x] Normal users can use admin-provided bundles without mutating them
 - [ ] Semantic search works across conversations with production-quality retrieval and UI
 - [ ] Entity/theme extraction is implemented with acceptable canonicalization quality if still needed
-- [ ] Worker retries/coalescing/priority are implemented clearly enough for self-hosted reliability
+- [x] Worker retries/coalescing/priority are implemented clearly enough for self-hosted reliability
 - [ ] Secrets handling and self-hosting docs are acceptable for open-source release
 - [x] Production-ready Docker/Unraid deployment is finalized

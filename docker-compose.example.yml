@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: llm-council:latest
-    command: ["uv", "run", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    command: ["uv", "run", "python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8002"]
     restart: unless-stopped
     ports:
       - "${COUNCIL_WEBAPP_PORT:-8002}:8002"

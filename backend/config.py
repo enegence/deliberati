@@ -6,8 +6,33 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _read_secret(name: str, default: str = "") -> str:
+    """Read a secret from NAME or NAME_FILE, preferring the direct env var."""
+    direct_value = os.getenv(name)
+    if direct_value:
+        return direct_value
+
+    file_path = os.getenv(f"{name}_FILE")
+    if not file_path:
+        return default
+
+    try:
+        return Path(file_path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return default
+
+
+def _read_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean environment flag."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # OpenRouter API key
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_API_KEY = _read_secret("OPENROUTER_API_KEY")
 
 # Council members - list of OpenRouter model identifiers
 COUNCIL_MODELS = [
@@ -61,7 +86,11 @@ BUNDLES_PATH = Path(
 )
 
 # Database connection for metadata, memory, jobs, and future semantic search.
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+DATABASE_URL = _read_secret("DATABASE_URL")
 
 # Rolling memory should stay compact when used as follow-up context.
 ROLLING_MEMORY_MAX_TOKENS = int(os.getenv("COUNCIL_MEMORY_MAX_TOKENS", "900"))
+
+# Browser auth hardening.
+CSRF_PROTECTION_ENABLED = _read_bool("COUNCIL_CSRF_PROTECTION", True)
+SECURE_COOKIES = _read_bool("COUNCIL_SECURE_COOKIES", False)

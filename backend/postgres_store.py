@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .config import DATABASE_URL
-from .search_utils import normalize_query, rank_and_dedupe_results
+from .search_utils import normalize_query, rank_and_dedupe_results, significant_query_terms
 
 logger = logging.getLogger("llm_council.postgres")
 
@@ -20,6 +20,25 @@ _SCHEMA_STATE_LOCK = threading.Lock()
 _SCHEMA_INITIALIZED = False
 _LAST_INIT_ATTEMPT = 0.0
 _INIT_RETRY_INTERVAL_SECONDS = 30.0
+MAX_JOB_ATTEMPTS = 3
+STALE_RUNNING_JOB_MINUTES = 30
+JOB_PRIORITIES = {
+    "refresh_memory": 100,
+    "index_turns": 80,
+    "export_markdown": 60,
+    "chunk_semantic": 40,
+    "extract_entities": 30,
+}
+
+
+def _job_priority(job_type: str) -> int:
+    """Return scheduling priority for a background job type."""
+    return JOB_PRIORITIES.get(job_type, 0)
+
+
+def _retry_delay_seconds(attempts: int) -> int:
+    """Return bounded exponential retry delay for a failed job attempt."""
+    return min(300, 5 * (2 ** max(0, attempts - 1)))
 
 
 def is_configured() -> bool:
@@ -143,6 +162,31 @@ def create_user(username: str, password_hash: str, role: str = "member") -> Opti
     return _normalize_user_row(row) if row else None
 
 
+def list_users() -> list[Dict[str, Any]]:
+    """Return local users ordered for admin management."""
+    if not ensure_database():
+        return []
+
+    try:
+        import psycopg.rows
+
+        with _connect() as connection:
+            with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, username, password_hash, role, created_at, disabled_at
+                    FROM users
+                    ORDER BY created_at ASC
+                    """
+                )
+                rows = cursor.fetchall()
+    except Exception:
+        logger.exception("Failed to list users")
+        return []
+
+    return [_normalize_user_row(row) for row in rows]
+
+
 def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     """Return a user by username."""
     if not ensure_database():
@@ -170,6 +214,33 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     return _normalize_user_row(row) if row else None
 
 
+def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    """Return a user by id."""
+    if not ensure_database():
+        return None
+
+    try:
+        import psycopg.rows
+
+        with _connect() as connection:
+            with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, username, password_hash, role, created_at, disabled_at
+                    FROM users
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (uuid.UUID(user_id),),
+                )
+                row = cursor.fetchone()
+    except Exception:
+        logger.exception("Failed to load user by id %s", user_id)
+        return None
+
+    return _normalize_user_row(row) if row else None
+
+
 def get_first_admin_user() -> Optional[Dict[str, Any]]:
     """Return the oldest enabled admin user."""
     if not ensure_database():
@@ -192,6 +263,77 @@ def get_first_admin_user() -> Optional[Dict[str, Any]]:
                 row = cursor.fetchone()
     except Exception:
         logger.exception("Failed to load first admin user")
+        return None
+
+    return _normalize_user_row(row) if row else None
+
+
+def count_enabled_admins() -> int:
+    """Return the number of enabled admin users."""
+    if not ensure_database():
+        return 0
+
+    try:
+        with _connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM users
+                    WHERE role = 'admin' AND disabled_at IS NULL
+                    """
+                )
+                row = cursor.fetchone()
+    except Exception:
+        logger.exception("Failed to count enabled admins")
+        return 0
+
+    return int(row[0]) if row else 0
+
+
+def update_user(
+    user_id: str,
+    *,
+    role: Optional[str] = None,
+    disabled: Optional[bool] = None,
+) -> Optional[Dict[str, Any]]:
+    """Update local user role and enabled/disabled state."""
+    if not ensure_database():
+        return None
+
+    assignments = []
+    params: list[Any] = []
+    if role is not None:
+        assignments.append("role = %s")
+        params.append(role)
+    if disabled is not None:
+        if disabled:
+            assignments.append("disabled_at = COALESCE(disabled_at, NOW())")
+        else:
+            assignments.append("disabled_at = NULL")
+
+    if not assignments:
+        return get_user_by_id(user_id)
+
+    params.append(uuid.UUID(user_id))
+
+    try:
+        import psycopg.rows
+
+        with _connect() as connection:
+            with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE users
+                    SET {", ".join(assignments)}
+                    WHERE id = %s
+                    RETURNING id, username, password_hash, role, created_at, disabled_at
+                    """,
+                    params,
+                )
+                row = cursor.fetchone()
+    except Exception:
+        logger.exception("Failed to update user %s", user_id)
         return None
 
     return _normalize_user_row(row) if row else None
@@ -277,6 +419,25 @@ def delete_user_session(token_hash: str) -> bool:
                 )
     except Exception:
         logger.exception("Failed to delete user session")
+        return False
+
+    return True
+
+
+def delete_user_sessions(user_id: str) -> bool:
+    """Delete all browser sessions for a local user."""
+    if not ensure_database():
+        return False
+
+    try:
+        with _connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM user_sessions WHERE user_id = %s",
+                    (uuid.UUID(user_id),),
+                )
+    except Exception:
+        logger.exception("Failed to delete sessions for user %s", user_id)
         return False
 
     return True
@@ -388,24 +549,63 @@ def enqueue_export_job(
     job_type: str,
     payload: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """Insert a background export/index job into Postgres."""
+    """Insert or coalesce a background export/index job in Postgres."""
     if not ensure_database():
         return False
 
+    priority = _job_priority(job_type)
+
     try:
-        with _connect() as connection:
+        with _connect_transactional() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    INSERT INTO export_jobs (conversation_id, job_type, payload)
-                    VALUES (%s, %s, %s::jsonb)
+                    SELECT id
+                    FROM export_jobs
+                    WHERE conversation_id = %s
+                      AND job_type = %s
+                      AND status IN ('pending', 'running')
+                    ORDER BY priority DESC, created_at ASC
+                    FOR UPDATE
+                    LIMIT 1
                     """,
-                    (
-                        uuid.UUID(conversation_id),
-                        job_type,
-                        json.dumps(payload or {}),
-                    ),
+                    (uuid.UUID(conversation_id), job_type),
                 )
+                existing = cursor.fetchone()
+                if existing:
+                    cursor.execute(
+                        """
+                        UPDATE export_jobs
+                        SET
+                            payload = %s::jsonb,
+                            priority = GREATEST(priority, %s),
+                            retry_after = CASE
+                                WHEN status = 'pending' THEN NULL
+                                ELSE retry_after
+                            END,
+                            error = NULL
+                        WHERE id = %s
+                        """,
+                        (json.dumps(payload or {}), priority, existing[0]),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO export_jobs (
+                            conversation_id,
+                            job_type,
+                            priority,
+                            payload
+                        ) VALUES (%s, %s, %s, %s::jsonb)
+                        """,
+                        (
+                            uuid.UUID(conversation_id),
+                            job_type,
+                            priority,
+                            json.dumps(payload or {}),
+                        ),
+                    )
+            connection.commit()
     except Exception:
         logger.exception(
             "Failed to enqueue export job %s for %s",
@@ -418,7 +618,7 @@ def enqueue_export_job(
 
 
 def get_pending_job_counts() -> Dict[str, int]:
-    """Return counts of pending jobs grouped by job type."""
+    """Return runnable and delayed pending job counts grouped by job type."""
     if not ensure_database():
         return {}
 
@@ -430,6 +630,7 @@ def get_pending_job_counts() -> Dict[str, int]:
                     SELECT job_type, COUNT(*)
                     FROM export_jobs
                     WHERE status = 'pending'
+                      AND (retry_after IS NULL OR retry_after <= NOW())
                     GROUP BY job_type
                     ORDER BY job_type
                     """
@@ -440,6 +641,76 @@ def get_pending_job_counts() -> Dict[str, int]:
         return {}
 
     return {job_type: count for job_type, count in rows}
+
+
+def get_export_job_status_summary() -> Dict[str, Any]:
+    """Return a compact status summary for worker observability."""
+    if not ensure_database():
+        return {}
+
+    try:
+        import psycopg.rows
+
+        with _connect() as connection:
+            with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
+                cursor.execute(
+                    """
+                    SELECT status, job_type, COUNT(*) AS count
+                    FROM export_jobs
+                    GROUP BY status, job_type
+                    ORDER BY status, job_type
+                    """
+                )
+                by_status = [dict(row) for row in cursor.fetchall()]
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM export_jobs
+                    WHERE status = 'pending'
+                      AND retry_after > NOW()
+                    """
+                )
+                delayed_pending = int(cursor.fetchone()["count"])
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM export_jobs
+                    WHERE status = 'running'
+                      AND started_at < NOW() - (%s * INTERVAL '1 minute')
+                    """,
+                    (STALE_RUNNING_JOB_MINUTES,),
+                )
+                stale_running = int(cursor.fetchone()["count"])
+
+                cursor.execute(
+                    """
+                    SELECT id, conversation_id::text AS conversation_id, job_type,
+                           attempts, error, finished_at
+                    FROM export_jobs
+                    WHERE status = 'failed'
+                    ORDER BY finished_at DESC NULLS LAST, id DESC
+                    LIMIT 10
+                    """
+                )
+                recent_failures = [dict(row) for row in cursor.fetchall()]
+    except Exception:
+        logger.exception("Failed to read export job status summary")
+        return {}
+
+    for failure in recent_failures:
+        if failure.get("finished_at") is not None:
+            failure["finished_at"] = failure["finished_at"].isoformat()
+
+    return {
+        "by_status": by_status,
+        "delayed_pending": delayed_pending,
+        "stale_running": stale_running,
+        "max_attempts": MAX_JOB_ATTEMPTS,
+        "stale_running_minutes": STALE_RUNNING_JOB_MINUTES,
+        "recent_failures": recent_failures,
+    }
 
 
 def has_active_export_job(conversation_id: str, job_type: str) -> bool:
@@ -577,11 +848,25 @@ def claim_next_export_job() -> Optional[Dict[str, Any]]:
             with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
                 cursor.execute(
                     """
+                    UPDATE export_jobs
+                    SET
+                        status = 'pending',
+                        retry_after = NOW(),
+                        error = COALESCE(error, 'Worker lease expired'),
+                        started_at = NULL
+                    WHERE status = 'running'
+                      AND started_at < NOW() - (%s * INTERVAL '1 minute')
+                    """,
+                    (STALE_RUNNING_JOB_MINUTES,),
+                )
+                cursor.execute(
+                    """
                     WITH next_job AS (
                         SELECT id
                         FROM export_jobs
                         WHERE status = 'pending'
-                        ORDER BY created_at
+                          AND (retry_after IS NULL OR retry_after <= NOW())
+                        ORDER BY priority DESC, created_at ASC
                         FOR UPDATE SKIP LOCKED
                         LIMIT 1
                     )
@@ -590,6 +875,7 @@ def claim_next_export_job() -> Optional[Dict[str, Any]]:
                         status = 'running',
                         attempts = jobs.attempts + 1,
                         started_at = NOW(),
+                        retry_after = NULL,
                         error = NULL
                     FROM next_job
                     WHERE jobs.id = next_job.id
@@ -598,7 +884,8 @@ def claim_next_export_job() -> Optional[Dict[str, Any]]:
                         jobs.conversation_id::text AS conversation_id,
                         jobs.job_type,
                         jobs.payload,
-                        jobs.attempts
+                        jobs.attempts,
+                        jobs.priority
                     """
                 )
                 job = cursor.fetchone()
@@ -621,7 +908,11 @@ def complete_export_job(job_id: int) -> bool:
                 cursor.execute(
                     """
                     UPDATE export_jobs
-                    SET status = 'completed', finished_at = NOW(), error = NULL
+                    SET
+                        status = 'completed',
+                        finished_at = NOW(),
+                        retry_after = NULL,
+                        error = NULL
                     WHERE id = %s
                     """,
                     (job_id,),
@@ -634,21 +925,57 @@ def complete_export_job(job_id: int) -> bool:
 
 
 def fail_export_job(job_id: int, error: str) -> bool:
-    """Mark an export job as failed."""
+    """Retry a failed job attempt or mark it permanently failed."""
     if not ensure_database():
         return False
 
     try:
-        with _connect() as connection:
+        with _connect_transactional() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    UPDATE export_jobs
-                    SET status = 'failed', finished_at = NOW(), error = %s
+                    SELECT attempts
+                    FROM export_jobs
                     WHERE id = %s
+                    FOR UPDATE
                     """,
-                    (error[:2000], job_id),
+                    (job_id,),
                 )
+                row = cursor.fetchone()
+                if row is None:
+                    connection.rollback()
+                    return False
+
+                attempts = int(row[0])
+                if attempts < MAX_JOB_ATTEMPTS:
+                    retry_delay = _retry_delay_seconds(attempts)
+                    cursor.execute(
+                        """
+                        UPDATE export_jobs
+                        SET
+                            status = 'pending',
+                            retry_after = NOW() + (%s * INTERVAL '1 second'),
+                            started_at = NULL,
+                            finished_at = NULL,
+                            error = %s
+                        WHERE id = %s
+                        """,
+                        (retry_delay, error[:2000], job_id),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE export_jobs
+                        SET
+                            status = 'failed',
+                            finished_at = NOW(),
+                            retry_after = NULL,
+                            error = %s
+                        WHERE id = %s
+                        """,
+                        (error[:2000], job_id),
+                    )
+            connection.commit()
     except Exception:
         logger.exception("Failed to fail export job %s", job_id)
         return False
@@ -782,7 +1109,7 @@ def replace_turn_index(conversation_id: str, entries: list[Dict[str, Any]]) -> b
 
 
 def store_export_artifacts(conversation_id: str, artifacts: list[Dict[str, Any]]) -> bool:
-    """Upsert export artifact rows for a conversation and related global notes."""
+    """Upsert export artifact rows for a conversation and related shared notes."""
     if not ensure_database():
         return False
 
@@ -797,7 +1124,7 @@ def store_export_artifacts(conversation_id: str, artifacts: list[Dict[str, Any]]
                     file_path = artifact["file_path"]
                     metadata = json.dumps(artifact.get("metadata") or {})
 
-                    if artifact.get("global"):
+                    if artifact.get("shared") or artifact.get("global"):
                         cursor.execute(
                             """
                             DELETE FROM export_artifacts
@@ -936,6 +1263,7 @@ def search_semantic_chunks(
         return []
 
     wildcard = f"%{normalized_query}%"
+    term_wildcards = [f"%{term}%" for term in significant_query_terms(normalized_query)]
 
     try:
         import psycopg.rows
@@ -943,11 +1271,20 @@ def search_semantic_chunks(
         with _connect() as connection:
             with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
                 owner_filter = ""
+                term_clauses = []
                 params: list[Any] = [wildcard, wildcard, wildcard, wildcard]
+                for term_wildcard in term_wildcards:
+                    term_clauses.append("(conversations.title ILIKE %s OR chunks.chunk_text ILIKE %s)")
+                    params.extend([term_wildcard, term_wildcard])
+
+                term_where = ""
+                if term_clauses:
+                    term_where = " OR " + " OR ".join(term_clauses)
+
                 if owner_user_id:
                     owner_filter = "AND conversations.owner_user_id = %s"
                     params.append(uuid.UUID(owner_user_id))
-                params.append(max(limit * 8, 40))
+                params.append(max(limit * 20, 100))
 
                 cursor.execute(
                     f"""
@@ -971,6 +1308,7 @@ def search_semantic_chunks(
                     WHERE (
                         conversations.title ILIKE %s
                         OR chunks.chunk_text ILIKE %s
+                        {term_where}
                     )
                        {owner_filter}
                     ORDER BY

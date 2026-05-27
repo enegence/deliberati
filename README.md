@@ -53,7 +53,7 @@ cd deliberati
 
 ### First launch
 
-Open the URL printed by `start.sh`. If no admin account exists yet, the app will prompt you to create one. That's the only setup step for auth — no seed scripts needed.
+Open the URL printed by `start.sh`. If no admin account exists yet, the app will prompt you to create one. That's the only setup step for auth — no seed scripts needed. After bootstrap, admins can create and manage household users from Settings → Users.
 
 ### Manual `.env`
 
@@ -68,6 +68,14 @@ Minimum required:
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
+
+Secrets can also be supplied from files with `OPENROUTER_API_KEY_FILE` and
+`DATABASE_URL_FILE`, which is useful for bind-mounted secret files in self-hosted
+deployments.
+
+Cookie auth uses SameSite=Lax session cookies plus CSRF tokens for authenticated
+write requests. Keep `COUNCIL_CSRF_PROTECTION=true`; set
+`COUNCIL_SECURE_COOKIES=true` when serving behind HTTPS/TLS.
 
 ### Configure the council
 
@@ -118,7 +126,7 @@ See [docs/unraid-deployment.md](docs/unraid-deployment.md) for Unraid-specific n
 - **Persistent conversations** — JSON transcripts on disk as source of truth
 - **Postgres metadata layer** — rolling memory, turn index, export jobs, semantic chunks, entity links
 - **Async worker** — background post-processing (memory summarization, search indexing, markdown/Obsidian exports)
-- **Semantic search** — search across conversations using pgvector embeddings
+- **Conversation search** — owner-filtered lexical search across indexed transcript chunks, with pgvector schema ready for future embeddings
 - **Model bundles** — save and switch between named council configurations
 - **Multi-user auth** — local username/password, session cookies, admin/member roles
 - **Obsidian export** — conversations exported as linked markdown vaults

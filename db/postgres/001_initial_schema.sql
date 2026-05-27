@@ -85,15 +85,26 @@ CREATE TABLE IF NOT EXISTS export_jobs (
     job_type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
+    priority INTEGER NOT NULL DEFAULT 0,
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    retry_after TIMESTAMPTZ,
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ
 );
 
+ALTER TABLE export_jobs
+    ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE export_jobs
+    ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS export_jobs_status_created_idx
     ON export_jobs (status, created_at);
+
+CREATE INDEX IF NOT EXISTS export_jobs_status_retry_priority_idx
+    ON export_jobs (status, retry_after, priority DESC, created_at);
 
 CREATE TABLE IF NOT EXISTS export_artifacts (
     id BIGSERIAL PRIMARY KEY,

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from . import storage
-from .search_utils import normalize_query, rank_and_dedupe_results
+from .search_utils import normalize_query, query_matches_text, rank_and_dedupe_results
 
 DEFAULT_CHUNK_MAX_CHARS = 1200
 DEFAULT_CHUNK_OVERLAP_CHARS = 180
@@ -191,7 +191,6 @@ def search_transcripts(
             continue
 
         title = conversation.get("title", "New Conversation")
-        title_match = normalized_query in title.lower()
         for chunk in build_semantic_chunks(conversation):
             message_index = (chunk.get("metadata") or {}).get("message_index")
             if (
@@ -206,8 +205,7 @@ def search_transcripts(
                 continue
 
             chunk_text = chunk["chunk_text"]
-            text_match = normalized_query in chunk_text.lower()
-            if not title_match and not text_match:
+            if not query_matches_text(normalized_query, title, chunk_text):
                 continue
 
             candidates.append(

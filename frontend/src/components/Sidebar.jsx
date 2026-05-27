@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import BundleManager from './BundleManager';
 import SearchDateRangePicker from './SearchDateRangePicker';
 import { renderHighlightedText } from './SearchHighlightText';
+import UserManager from './UserManager';
 import './Sidebar.css';
 
 function formatSearchSource(result) {
@@ -69,6 +70,7 @@ export default function Sidebar({
   const [editingConversationId, setEditingConversationId] = useState(null);
   const [draftTitle, setDraftTitle] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsView, setSettingsView] = useState('bundles');
   const [isConversationListOverflowing, setIsConversationListOverflowing] = useState(false);
   const [showConversationListScrollUpHint, setShowConversationListScrollUpHint] = useState(false);
   const [showConversationListScrollDownHint, setShowConversationListScrollDownHint] = useState(false);
@@ -125,6 +127,7 @@ export default function Sidebar({
   };
 
   const canManageBundles = currentUser?.role === 'admin';
+  const canManageUsers = currentUser?.role === 'admin';
 
   useEffect(() => {
     const node = conversationListRef.current;
@@ -189,11 +192,13 @@ export default function Sidebar({
           <div className="sidebar-settings-inline-header">
             <div>
               <div className="sidebar-settings-eyebrow">Settings</div>
-              <h2>Council Bundles</h2>
+              <h2>{settingsView === 'users' ? 'Users' : 'Council Bundles'}</h2>
               <p>
-                {canManageBundles
-                  ? 'Configure the models used for new council runs.'
-                  : 'Choose the model bundle for new council runs.'}
+                {settingsView === 'users'
+                  ? 'Create household accounts and manage access.'
+                  : canManageBundles
+                    ? 'Configure the models used for new council runs.'
+                    : 'Choose the model bundle for new council runs.'}
               </p>
             </div>
             <button
@@ -204,17 +209,43 @@ export default function Sidebar({
               Close
             </button>
           </div>
+          {canManageUsers && (
+            <div className="settings-tabs" role="tablist" aria-label="Settings section">
+              <button
+                className={settingsView === 'bundles' ? 'active' : ''}
+                type="button"
+                role="tab"
+                aria-selected={settingsView === 'bundles'}
+                onClick={() => setSettingsView('bundles')}
+              >
+                Bundles
+              </button>
+              <button
+                className={settingsView === 'users' ? 'active' : ''}
+                type="button"
+                role="tab"
+                aria-selected={settingsView === 'users'}
+                onClick={() => setSettingsView('users')}
+              >
+                Users
+              </button>
+            </div>
+          )}
           <div className="sidebar-settings-panel-body">
-            <BundleManager
-              bundles={modelBundles}
-              selectedBundleId={selectedBundleId}
-              onSelectBundle={onSelectBundle}
-              onSaveBundle={onSaveBundle}
-              onDeleteBundle={onDeleteBundle}
-              onReorderBundles={onReorderBundles}
-              onSetDefaultBundle={onSetDefaultBundle}
-              canManageBundles={canManageBundles}
-            />
+            {settingsView === 'users' && canManageUsers ? (
+              <UserManager currentUser={currentUser} />
+            ) : (
+              <BundleManager
+                bundles={modelBundles}
+                selectedBundleId={selectedBundleId}
+                onSelectBundle={onSelectBundle}
+                onSaveBundle={onSaveBundle}
+                onDeleteBundle={onDeleteBundle}
+                onReorderBundles={onReorderBundles}
+                onSetDefaultBundle={onSetDefaultBundle}
+                canManageBundles={canManageBundles}
+              />
+            )}
           </div>
         </div>
       ) : (
