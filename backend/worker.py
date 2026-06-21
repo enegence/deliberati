@@ -12,13 +12,17 @@ from .config import (
 from . import postgres_store, storage
 from .entity_extraction import build_conversation_entities
 from .markdown_exports import export_conversation_markdown
-from .postprocess import build_memory_record, build_turn_index_entries
-from .summarizer import build_llm_turn_index_entries
+from .summarizer import build_llm_turn_index_entries, build_llm_memory_record
 from .semantic_search import build_semantic_chunks
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("llm_council.worker")
+
+
+def _turn_summary_lines(conversation_id: str) -> list:
+    rows = postgres_store.get_conversation_turn_index(conversation_id)
+    return [row.get("short_highlight", "") for row in rows if row.get("short_highlight")]
 
 
 async def process_job(job: dict):
@@ -29,8 +33,10 @@ async def process_job(job: dict):
         raise ValueError(f"Conversation {conversation_id} not found for job {job['id']}")
 
     if job["job_type"] == "refresh_memory":
-        memory_record = build_memory_record(
+        turn_summaries = _turn_summary_lines(conversation_id)
+        memory_record = await build_llm_memory_record(
             conversation,
+            turn_summaries,
             max_tokens=ROLLING_MEMORY_MAX_TOKENS,
         )
         version = postgres_store.store_conversation_memory(

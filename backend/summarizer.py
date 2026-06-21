@@ -13,11 +13,16 @@ from typing import Any, Dict, List, Optional
 
 from . import config
 from .openrouter import query_model
-from .postprocess import build_turn_index_entries, _is_probably_pasted_source
+from .postprocess import build_memory_record, render_memory_text, build_turn_index_entries, _is_probably_pasted_source
 from .usage import build_usage_request
 
 TURN_SUMMARY_MAX_CHARS = 180
 _TURN_TIMEOUT = 30.0
+
+MEMORY_REQUIRED_KEYS = (
+    "current_goal", "user_objective", "stable_constraints",
+    "recent_decisions", "open_threads", "background_context_notes",
+)
 
 
 def content_hash(text: str) -> str:
@@ -162,3 +167,72 @@ async def build_llm_turn_index_entries(
             entry["short_highlight"] = result["summary"]
 
     return entries
+
+
+_MEMORY_TIMEOUT = 30.0
+
+
+def _memory_prompt(turn_summaries: List[str]) -> str:
+    joined = "\n".join(f"- {line}" for line in turn_summaries if line)
+    keys = ", ".join(MEMORY_REQUIRED_KEYS)
+    return (
+        "You maintain rolling memory for a multi-turn AI council conversation. "
+        "From the ordered turn summaries below, output a JSON object with EXACTLY "
+        f"these keys: {keys}. "
+        "current_goal and user_objective are strings; the rest are arrays of short "
+        "strings. Use [] for empty arrays and \"\" for empty strings. "
+        "Output only the JSON.\n\nTurn summaries:\n"
+        f"{joined}\n\nJSON:"
+    )
+
+
+async def summarize_memory(
+    summary_json_seed: Dict[str, Any], turn_summaries: List[str]
+) -> Optional[Dict[str, Any]]:
+    """Return validated memory fields from the LLM, or None to fall back."""
+    if not _enabled():
+        return None
+    model = _model()
+    messages = [{"role": "user", "content": _memory_prompt(turn_summaries)}]
+    response = await query_model(model, messages, timeout=_MEMORY_TIMEOUT)
+    if not response:
+        return None
+    parsed = parse_json_block(response.get("content") or "")
+    if not isinstance(parsed, dict):
+        return None
+    if not all(key in parsed for key in MEMORY_REQUIRED_KEYS):
+        return None
+    return parsed
+
+
+async def build_llm_memory_record(
+    conversation: Dict[str, Any],
+    turn_summaries: List[str],
+    max_tokens: int,
+) -> Dict[str, Any]:
+    """Deterministic memory record with LLM-filled fields when available."""
+    record = build_memory_record(conversation, max_tokens=max_tokens)
+    if not _enabled():
+        return record
+
+    fields = await summarize_memory(record["summary_json"], turn_summaries)
+    if not fields:
+        return record
+
+    summary_json = {**record["summary_json"], **fields}
+    latest_stage3 = next(
+        (
+            m.get("stage3", {}).get("response", "")
+            for m in reversed(conversation.get("messages", []))
+            if m.get("role") == "assistant" and m.get("stage3", {}).get("response")
+        ),
+        "",
+    )
+    summary_text, token_estimate = render_memory_text(summary_json, latest_stage3, max_tokens)
+    summary_json["token_estimate"] = token_estimate
+    return {
+        "summary_text": summary_text,
+        "summary_json": summary_json,
+        "token_estimate": token_estimate,
+        "source_turn_count": record["source_turn_count"],
+    }
