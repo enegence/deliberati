@@ -10,9 +10,12 @@ from .config import (
     TRANSCRIPTS_DIR,
 )
 from . import postgres_store, storage
-from .entity_extraction import build_conversation_entities
 from .markdown_exports import export_conversation_markdown
-from .summarizer import build_llm_turn_index_entries, build_llm_memory_record
+from .summarizer import (
+    build_llm_turn_index_entries,
+    build_llm_memory_record,
+    build_llm_conversation_entities,
+)
 from .semantic_search import build_semantic_chunks
 
 
@@ -95,7 +98,12 @@ async def process_job(job: dict):
         return
 
     if job["job_type"] == "extract_entities":
-        entities = build_conversation_entities(conversation)
+        turn_summaries = _turn_summary_lines(conversation_id)
+        memory = postgres_store.get_latest_conversation_memory(conversation_id) or {}
+        memory_text = memory.get("summary_text", "") if isinstance(memory, dict) else ""
+        entities = await build_llm_conversation_entities(
+            conversation, turn_summaries, memory_text
+        )
         if not postgres_store.replace_conversation_entities(conversation_id, entities):
             raise RuntimeError(f"Unable to store extracted entities for {conversation_id}")
 

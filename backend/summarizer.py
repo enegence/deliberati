@@ -12,12 +12,14 @@ import re
 from typing import Any, Dict, List, Optional
 
 from . import config
+from .entity_extraction import build_exact_entities, build_inferred_entities
 from .openrouter import query_model
 from .postprocess import build_memory_record, render_memory_text, build_turn_index_entries, _is_probably_pasted_source
 from .usage import build_usage_request
 
 TURN_SUMMARY_MAX_CHARS = 180
 _TURN_TIMEOUT = 30.0
+_TAG_TIMEOUT = 30.0
 
 MEMORY_REQUIRED_KEYS = (
     "current_goal", "user_objective", "stable_constraints",
@@ -236,3 +238,95 @@ async def build_llm_memory_record(
         "token_estimate": token_estimate,
         "source_turn_count": record["source_turn_count"],
     }
+
+
+_VALID_TAG_TYPES = {"entity", "theme"}
+_VALID_TAG_KEYS = {"entity_type", "canonical_name", "link_type"}
+
+
+def _tags_prompt(turn_summaries: List[str], memory_text: str) -> str:
+    joined = "\n".join(f"- {line}" for line in turn_summaries if line)
+    return (
+        "Extract the salient named entities and recurring themes from this "
+        "conversation. Return a JSON array of objects, each with keys "
+        '"entity_type" ("entity" for proper nouns/projects/products, "theme" for '
+        'topic keywords), "canonical_name", and "link_type" ("mentioned" for '
+        'entities, "theme" for themes). Max 12 items. Output only the JSON array.'
+        f"\n\nMemory:\n{memory_text}\n\nTurn summaries:\n{joined}\n\nJSON:"
+    )
+
+
+def _coerce_tag(item: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    if not _VALID_TAG_KEYS.issubset(item.keys()):
+        return None
+    entity_type = item["entity_type"]
+    name = (item.get("canonical_name") or "").strip()
+    if entity_type not in _VALID_TAG_TYPES or not name:
+        return None
+    link_type = item["link_type"] if item["link_type"] in {"mentioned", "theme"} else (
+        "mentioned" if entity_type == "entity" else "theme"
+    )
+    return {
+        "entity_type": entity_type,
+        "canonical_name": name,
+        "link_type": link_type,
+        "metadata": {"source": "llm"},
+    }
+
+
+async def extract_tags(
+    turn_summaries: List[str], memory_text: str
+) -> Optional[List[Dict[str, Any]]]:
+    """LLM entity/theme tags, or None to fall back to deterministic."""
+    if not _enabled():
+        return None
+    model = _model()
+    messages = [{"role": "user", "content": _tags_prompt(turn_summaries, memory_text)}]
+    response = await query_model(model, messages, timeout=_TAG_TIMEOUT)
+    if not response:
+        return None
+    parsed = parse_json_block(response.get("content") or "")
+    if not isinstance(parsed, list):
+        return None
+    tags = [coerced for coerced in (_coerce_tag(item) for item in parsed) if coerced]
+    return tags or None
+
+
+async def build_llm_conversation_entities(
+    conversation: Dict[str, Any],
+    turn_summaries: List[str],
+    memory_text: str,
+) -> List[Dict[str, Any]]:
+    """Exact bundle/model links plus LLM (or deterministic) entity/theme tags."""
+    entities, add_entity = _entity_collector()
+    for entity in build_exact_entities(conversation):
+        add_entity(entity)
+
+    inferred = None
+    if _enabled():
+        inferred = await extract_tags(turn_summaries, memory_text)
+    if inferred is None:
+        inferred = build_inferred_entities(conversation)
+
+    for entity in inferred:
+        add_entity(entity)
+    return entities
+
+
+def _entity_collector():
+    seen = set()
+    entities: List[Dict[str, Any]] = []
+
+    def add_entity(entity: Dict[str, Any]):
+        name = (entity.get("canonical_name") or "").strip()
+        if not name:
+            return
+        key = (entity["entity_type"], name.lower(), entity["link_type"])
+        if key in seen:
+            return
+        seen.add(key)
+        entities.append(entity)
+
+    return entities, add_entity
