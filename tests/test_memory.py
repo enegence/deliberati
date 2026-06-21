@@ -54,6 +54,24 @@ async def test_build_llm_memory_record_falls_back(enable_summarizer, monkeypatch
     assert record["summary_json"]["current_goal"] == deterministic["summary_json"]["current_goal"]
 
 
+async def test_build_llm_memory_record_mirror_keys_synced(enable_summarizer, monkeypatch):
+    async def fake_summarize_memory(seed, turn_summaries):
+        return {
+            "current_goal": "LLM GOAL",
+            "user_objective": "LLM OBJECTIVE",
+            "stable_constraints": ["llm-c"],
+            "recent_decisions": ["llm-d"],
+            "open_threads": ["llm-thread"],
+            "background_context_notes": ["llm-note"],
+        }
+    monkeypatch.setattr(summarizer, "summarize_memory", fake_summarize_memory)
+    record = await summarizer.build_llm_memory_record(_conv(), ["t1", "t2"], max_tokens=900)
+    sj = record["summary_json"]
+    assert sj["latest_user_request"] == sj["current_goal"] == "LLM GOAL"
+    assert sj["persistent_constraints"] == sj["stable_constraints"] == ["llm-c"]
+    assert sj["recent_council_conclusions"] == sj["recent_decisions"] == ["llm-d"]
+
+
 async def test_summarize_memory_rejects_missing_keys(enable_summarizer, monkeypatch):
     async def fake_query_model(model, messages, timeout=120.0, max_attempts=2):
         return {"content": '{"current_goal": "x"}', "usage": None}  # missing required keys

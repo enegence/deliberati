@@ -222,6 +222,9 @@ async def build_llm_memory_record(
         return record
 
     summary_json = {**record["summary_json"], **fields}
+    summary_json["latest_user_request"] = summary_json["current_goal"]
+    summary_json["persistent_constraints"] = summary_json["stable_constraints"]
+    summary_json["recent_council_conclusions"] = summary_json["recent_decisions"]
     latest_stage3 = next(
         (
             m.get("stage3", {}).get("response", "")
