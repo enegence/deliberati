@@ -63,8 +63,14 @@ testpaths = ["tests"]
 
 - [ ] **Step 2: Install test deps into the venv**
 
-Run: `.venv/bin/pip install -e ".[test]"`
-Expected: installs pytest + pytest-asyncio successfully.
+The project has no `[build-system]` and uses a flat layout, so an editable
+install is unnecessary and would fail. `backend` imports fine from the repo
+root, so install the test tools directly:
+
+Run: `.venv/bin/pip install "pytest>=8.0.0" "pytest-asyncio>=0.23.0"`
+Expected: installs pytest + pytest-asyncio successfully. (The
+`[project.optional-dependencies] test` group is declared in `pyproject.toml`
+only as documentation.)
 
 - [ ] **Step 3: Create `tests/__init__.py`**
 
