@@ -91,6 +91,13 @@ DATABASE_URL = _read_secret("DATABASE_URL")
 # Rolling memory should stay compact when used as follow-up context.
 ROLLING_MEMORY_MAX_TOKENS = int(os.getenv("COUNCIL_MEMORY_MAX_TOKENS", "900"))
 
+# Cheap LLM summarizer/tagger for post-processing passes.
+SUMMARIZER_MODEL = os.getenv("COUNCIL_SUMMARIZER_MODEL", "openai/gpt-5-nano")
+SUMMARIZER_ENABLED = _read_bool("COUNCIL_SUMMARIZER_ENABLED", True)
+SUMMARIZER_VERSION = int(os.getenv("COUNCIL_SUMMARIZER_VERSION", "1"))
+# User turns at/below this length with no code/pasted structure skip the LLM.
+SUMMARIZER_MIN_CHARS = int(os.getenv("COUNCIL_SUMMARIZER_MIN_CHARS", "120"))
+
 # Browser auth hardening.
 CSRF_PROTECTION_ENABLED = _read_bool("COUNCIL_CSRF_PROTECTION", True)
 SECURE_COOKIES = _read_bool("COUNCIL_SECURE_COOKIES", False)
