@@ -597,6 +597,50 @@ def _extract_active_bundle(conversation: Dict[str, Any]) -> Dict[str, str]:
     return {"id": "", "name": ""}
 
 
+def render_memory_text(
+    summary_json: Dict[str, Any],
+    latest_stage3: str = "",
+    max_tokens: int = DEFAULT_MEMORY_MAX_TOKENS,
+) -> tuple[str, int]:
+    """Render the human-readable summary text + token estimate from fields."""
+    lines = [
+        "Conversation Memory",
+        f"- Current goal: {summary_json.get('current_goal') or 'No current goal recorded.'}",
+    ]
+    if (
+        summary_json.get("user_objective")
+        and summary_json["user_objective"] != summary_json.get("current_goal")
+    ):
+        lines.append(f"- Original objective: {summary_json['user_objective']}")
+    if summary_json.get("background_context_notes"):
+        lines.append("- Background context:")
+        lines.extend(f"  - {item}" for item in summary_json["background_context_notes"])
+    if summary_json.get("stable_constraints"):
+        lines.append("- Stable constraints:")
+        lines.extend(f"  - {item}" for item in summary_json["stable_constraints"])
+    if summary_json.get("recent_decisions"):
+        lines.append("- Recent decisions:")
+        lines.extend(f"  - {item}" for item in summary_json["recent_decisions"])
+    if summary_json.get("open_threads"):
+        lines.append("- Open threads:")
+        lines.extend(f"  - {item}" for item in summary_json["open_threads"])
+    if summary_json.get("active_bundle", {}).get("name"):
+        lines.append(f"- Active bundle: {summary_json['active_bundle']['name']}")
+
+    latest_verdict_anchor = _prepare_snippet(latest_stage3, 200) if latest_stage3 else ""
+    if latest_verdict_anchor and latest_verdict_anchor not in summary_json.get("recent_decisions", []):
+        lines.append(f"- Latest verdict anchor: {latest_verdict_anchor}")
+
+    summary_text = "\n".join(lines)
+    if len(summary_text) > DEFAULT_MEMORY_MAX_CHARS:
+        summary_text = _clip_text(summary_text, DEFAULT_MEMORY_MAX_CHARS)
+    token_estimate = _approx_token_estimate(summary_text)
+    if token_estimate > max_tokens:
+        summary_text = _clip_text(summary_text, max_tokens * 4)
+        token_estimate = _approx_token_estimate(summary_text)
+    return summary_text, token_estimate
+
+
 def build_memory_record(
     conversation: Dict[str, Any],
     max_tokens: int = DEFAULT_MEMORY_MAX_TOKENS,
@@ -637,52 +681,9 @@ def build_memory_record(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    lines = [
-        "Conversation Memory",
-        f"- Current goal: {summary_json['current_goal'] or 'No current goal recorded.'}",
-    ]
-
-    if (
-        summary_json["user_objective"]
-        and summary_json["user_objective"] != summary_json["current_goal"]
-    ):
-        lines.append(f"- Original objective: {summary_json['user_objective']}")
-
-    if summary_json["background_context_notes"]:
-        lines.append("- Background context:")
-        lines.extend(f"  - {item}" for item in summary_json["background_context_notes"])
-
-    if summary_json["stable_constraints"]:
-        lines.append("- Stable constraints:")
-        lines.extend(f"  - {item}" for item in summary_json["stable_constraints"])
-
-    if summary_json["recent_decisions"]:
-        lines.append("- Recent decisions:")
-        lines.extend(f"  - {item}" for item in summary_json["recent_decisions"])
-
-    if summary_json["open_threads"]:
-        lines.append("- Open threads:")
-        lines.extend(f"  - {item}" for item in summary_json["open_threads"])
-
-    if summary_json["active_bundle"].get("name"):
-        lines.append(f"- Active bundle: {summary_json['active_bundle']['name']}")
-
-    latest_verdict_anchor = _prepare_snippet(latest_stage3_response, 200) if latest_stage3_response else ""
-    if (
-        latest_verdict_anchor
-        and latest_verdict_anchor not in summary_json["recent_decisions"]
-    ):
-        lines.append(f"- Latest verdict anchor: {latest_verdict_anchor}")
-
-    summary_text = "\n".join(lines)
-    if len(summary_text) > DEFAULT_MEMORY_MAX_CHARS:
-        summary_text = _clip_text(summary_text, DEFAULT_MEMORY_MAX_CHARS)
-
-    token_estimate = _approx_token_estimate(summary_text)
-    if token_estimate > max_tokens:
-        summary_text = _clip_text(summary_text, max_tokens * 4)
-        token_estimate = _approx_token_estimate(summary_text)
-
+    summary_text, token_estimate = render_memory_text(
+        summary_json, latest_stage3_response, max_tokens
+    )
     summary_json["token_estimate"] = token_estimate
     return {
         "summary_text": summary_text,

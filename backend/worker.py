@@ -10,14 +10,22 @@ from .config import (
     TRANSCRIPTS_DIR,
 )
 from . import postgres_store, storage
-from .entity_extraction import build_conversation_entities
 from .markdown_exports import export_conversation_markdown
-from .postprocess import build_memory_record, build_turn_index_entries
+from .summarizer import (
+    build_llm_turn_index_entries,
+    build_llm_memory_record,
+    build_llm_conversation_entities,
+)
 from .semantic_search import build_semantic_chunks
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("llm_council.worker")
+
+
+def _turn_summary_lines(conversation_id: str) -> list:
+    rows = postgres_store.get_conversation_turn_index(conversation_id)
+    return [row.get("short_highlight", "") for row in rows if row.get("short_highlight")]
 
 
 async def process_job(job: dict):
@@ -28,8 +36,10 @@ async def process_job(job: dict):
         raise ValueError(f"Conversation {conversation_id} not found for job {job['id']}")
 
     if job["job_type"] == "refresh_memory":
-        memory_record = build_memory_record(
+        turn_summaries = _turn_summary_lines(conversation_id)
+        memory_record = await build_llm_memory_record(
             conversation,
+            turn_summaries,
             max_tokens=ROLLING_MEMORY_MAX_TOKENS,
         )
         version = postgres_store.store_conversation_memory(
@@ -51,7 +61,8 @@ async def process_job(job: dict):
         return
 
     if job["job_type"] == "index_turns":
-        entries = build_turn_index_entries(conversation)
+        existing_rows = postgres_store.get_conversation_turn_index(conversation_id)
+        entries = await build_llm_turn_index_entries(conversation, existing_rows)
         if not postgres_store.replace_turn_index(conversation_id, entries):
             raise RuntimeError(f"Unable to replace turn index for {conversation_id}")
 
@@ -87,7 +98,12 @@ async def process_job(job: dict):
         return
 
     if job["job_type"] == "extract_entities":
-        entities = build_conversation_entities(conversation)
+        turn_summaries = _turn_summary_lines(conversation_id)
+        memory = postgres_store.get_latest_conversation_memory(conversation_id) or {}
+        memory_text = memory.get("summary_text", "") if isinstance(memory, dict) else ""
+        entities = await build_llm_conversation_entities(
+            conversation, turn_summaries, memory_text
+        )
         if not postgres_store.replace_conversation_entities(conversation_id, entities):
             raise RuntimeError(f"Unable to store extracted entities for {conversation_id}")
 

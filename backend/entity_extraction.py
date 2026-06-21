@@ -139,8 +139,7 @@ def _extract_theme_terms(texts: List[str], limit: int = 8) -> List[tuple[str, Di
     ]
 
 
-def build_conversation_entities(conversation: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Build deterministic entity/theme links for one conversation."""
+def _new_collector():
     seen = set()
     entities: List[Dict[str, Any]] = []
 
@@ -161,27 +160,33 @@ def build_conversation_entities(conversation: Dict[str, Any]) -> List[Dict[str, 
             }
         )
 
+    return entities, add_entity
+
+
+def build_exact_entities(conversation: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Bundle and model links derived from exact message metadata."""
+    entities, add_entity = _new_collector()
     for bundle_name in sorted(set(_iter_message_bundles(conversation))):
-        add_entity(
-            "bundle",
-            bundle_name,
-            "uses_bundle",
-            {"source": "message_bundle"},
-        )
-
+        add_entity("bundle", bundle_name, "uses_bundle", {"source": "message_bundle"})
     for model_id in sorted(set(_iter_model_ids(conversation))):
-        add_entity(
-            "model",
-            model_id,
-            "mentions_model",
-            {"source": "message_metadata"},
-        )
+        add_entity("model", model_id, "mentions_model", {"source": "message_metadata"})
+    return entities
 
+
+def build_inferred_entities(conversation: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Capitalized entities and theme keywords from summary text (deterministic)."""
+    entities, add_entity = _new_collector()
     summary_texts = _summary_text_sources(conversation)
     for name, metadata in _extract_capitalized_entities(conversation.get("title", ""), summary_texts):
         add_entity("entity", name, "mentioned", metadata)
-
     for theme, metadata in _extract_theme_terms(summary_texts):
         add_entity("theme", theme, "theme", metadata)
+    return entities
 
+
+def build_conversation_entities(conversation: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Deterministic entity/theme links for one conversation (exact + inferred)."""
+    entities, add_entity = _new_collector()
+    for entity in build_exact_entities(conversation) + build_inferred_entities(conversation):
+        add_entity(entity["entity_type"], entity["canonical_name"], entity["link_type"], entity["metadata"])
     return entities
