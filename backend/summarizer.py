@@ -304,9 +304,7 @@ async def build_llm_conversation_entities(
     for entity in build_exact_entities(conversation):
         add_entity(entity)
 
-    inferred = None
-    if _enabled():
-        inferred = await extract_tags(turn_summaries, memory_text)
+    inferred = await extract_tags(turn_summaries, memory_text)
     if inferred is None:
         inferred = build_inferred_entities(conversation)
 
