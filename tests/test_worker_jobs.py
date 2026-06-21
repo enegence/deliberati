@@ -22,7 +22,7 @@ def stub_storage(monkeypatch):
     monkeypatch.setattr(postgres_store, "get_latest_conversation_memory", lambda cid: {})
     captured = {}
     monkeypatch.setattr(postgres_store, "replace_turn_index", lambda cid, e: captured.__setitem__("turns", e) or True)
-    monkeypatch.setattr(postgres_store, "store_conversation_memory", lambda *a: 1)
+    monkeypatch.setattr(postgres_store, "store_conversation_memory", lambda *a: (captured.__setitem__("memory", a[2]) or 1))
     monkeypatch.setattr(postgres_store, "replace_conversation_entities", lambda cid, e: captured.__setitem__("entities", e) or True)
     return captured
 
@@ -57,5 +57,7 @@ async def test_all_jobs_run_with_summarizer_enabled(stub_storage, enable_summari
     for job_type in ("index_turns", "refresh_memory", "extract_entities"):
         await worker.process_job({"job_type": job_type, "conversation_id": _conv()["id"], "id": "j"})
 
+    # First message is a short user turn — deterministically skipped by LLM; LLM summary lands on turns[1] (assistant).
     assert stub_storage["turns"][1]["short_highlight"] == "ESSENCE"
     assert any(e["canonical_name"] == "csv import" for e in stub_storage["entities"])
+    assert stub_storage["memory"]["current_goal"] == "fast csv"
