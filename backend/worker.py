@@ -13,6 +13,7 @@ from . import postgres_store, storage
 from .entity_extraction import build_conversation_entities
 from .markdown_exports import export_conversation_markdown
 from .postprocess import build_memory_record, build_turn_index_entries
+from .summarizer import build_llm_turn_index_entries
 from .semantic_search import build_semantic_chunks
 
 
@@ -51,7 +52,8 @@ async def process_job(job: dict):
         return
 
     if job["job_type"] == "index_turns":
-        entries = build_turn_index_entries(conversation)
+        existing_rows = postgres_store.get_conversation_turn_index(conversation_id)
+        entries = await build_llm_turn_index_entries(conversation, existing_rows)
         if not postgres_store.replace_turn_index(conversation_id, entries):
             raise RuntimeError(f"Unable to replace turn index for {conversation_id}")
 

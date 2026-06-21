@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from . import config
 from .openrouter import query_model
+from .postprocess import build_turn_index_entries, _is_probably_pasted_source
 from .usage import build_usage_request
 
 TURN_SUMMARY_MAX_CHARS = 180
@@ -91,3 +92,73 @@ async def summarize_turn(
             kind="turn_summary", usage=response.get("usage"), model=model
         ),
     }
+
+
+def _message_source_text(message: Dict[str, Any]) -> str:
+    """The text whose change should invalidate a cached turn summary."""
+    if message.get("role") == "user":
+        return message.get("content", "") or ""
+    if message.get("error"):
+        return f"error:{message.get('error', {}).get('message', '')}"
+    return message.get("stage3", {}).get("response", "") or ""
+
+
+def _should_use_llm_for_turn(message: Dict[str, Any]) -> bool:
+    """Assistant/error turns and long/structured user turns use the LLM."""
+    role = message.get("role")
+    if role != "user":
+        return bool(_message_source_text(message))
+    content = message.get("content", "") or ""
+    if _is_probably_pasted_source(content):
+        return True
+    return len(content.strip()) > config.SUMMARIZER_MIN_CHARS
+
+
+def _existing_by_turn(existing_rows: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    return {row.get("turn_number"): row for row in existing_rows or []}
+
+
+async def build_llm_turn_index_entries(
+    conversation: Dict[str, Any],
+    existing_rows: List[Dict[str, Any]],
+    summarize_fn=None,
+) -> List[Dict[str, Any]]:
+    """Deterministic floor overlaid with cached/fresh LLM turn summaries."""
+    # Resolve at call time so monkeypatching summarizer.summarize_turn works.
+    summarize_fn = summarize_fn or summarize_turn
+    entries = build_turn_index_entries(conversation)
+    messages = conversation.get("messages", [])
+    cache = _existing_by_turn(existing_rows)
+    version = config.SUMMARIZER_VERSION
+
+    for entry, message in zip(entries, messages):
+        source_hash = content_hash(_message_source_text(message))
+        entry["transcript_offset"] = {
+            **entry.get("transcript_offset", {}),
+            "summarizer_version": version,
+            "source_hash": source_hash,
+        }
+
+        cached = cache.get(entry["turn_number"])
+        if cached:
+            cached_offset = cached.get("transcript_offset") or {}
+            if (
+                cached_offset.get("summarizer_version") == version
+                and cached_offset.get("source_hash") == source_hash
+                and cached.get("short_highlight")
+            ):
+                entry["short_highlight"] = cached["short_highlight"]
+                continue
+
+        if not _enabled() or not _should_use_llm_for_turn(message):
+            continue  # keep deterministic floor
+
+        result = await summarize_fn(
+            message.get("role", "assistant"),
+            message.get("content", "") or "",
+            message.get("stage3", {}).get("response", "") or "",
+        )
+        if result and result.get("summary"):
+            entry["short_highlight"] = result["summary"]
+
+    return entries
