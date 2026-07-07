@@ -31,6 +31,7 @@ from .postprocess import (
     MEMORY_FORMAT_VERSION,
     build_memory_record,
     build_turn_index_entries,
+    merge_turn_index_entries,
 )
 from .usage import summarize_conversation_usage
 
@@ -157,6 +158,14 @@ def resolve_frontend_asset(relative_path: str) -> Optional[Path]:
     return None
 
 
+def serialize_turn_index_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize created_at to an ISO string (stored rows carry datetimes)."""
+    created_at = entry.get("created_at")
+    if hasattr(created_at, "isoformat"):
+        created_at = created_at.isoformat()
+    return {**entry, "created_at": created_at}
+
+
 def serialize_conversation_overview(
     conversation_id: str,
     conversation: Dict[str, Any],
@@ -199,22 +208,15 @@ def serialize_conversation_overview(
         and stored_turn_index[0].get("short_highlight") != derived_turn_index[0].get("short_highlight")
     )
 
-    if stored_turn_index and not stored_turn_index_looks_generic:
-        turn_index = [
-            {
-                **entry,
-                "created_at": entry["created_at"].isoformat(),
-            }
-            for entry in stored_turn_index
-        ]
-    else:
-        turn_index = [
-            {
-                **entry,
-                "created_at": entry["created_at"],
-            }
-            for entry in derived_turn_index
-        ]
+    usable_stored_index = (
+        stored_turn_index
+        if stored_turn_index and not stored_turn_index_looks_generic
+        else []
+    )
+    turn_index = [
+        serialize_turn_index_entry(entry)
+        for entry in merge_turn_index_entries(usable_stored_index, derived_turn_index)
+    ]
 
     return {
         "conversation_id": conversation_id,
