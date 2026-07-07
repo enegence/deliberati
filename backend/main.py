@@ -249,8 +249,6 @@ def maybe_enqueue_overview_backfill(conversation: Dict[str, Any]) -> Dict[str, b
             "turn_index_pending": False,
         }
 
-    memory_pending = False
-    turn_index_pending = False
     payload = {
         "transcript_path": transcript_path,
         "message_count": len(conversation.get("messages", [])),
@@ -263,32 +261,31 @@ def maybe_enqueue_overview_backfill(conversation: Dict[str, Any]) -> Dict[str, b
         latest_memory
         and latest_memory.get("summary_json", {}).get("format_version") != MEMORY_FORMAT_VERSION
     )
-    if latest_memory is None or memory_is_stale:
-        memory_pending = postgres_store.has_active_export_job(conversation_id, "refresh_memory")
-        if not memory_pending:
-            memory_pending = postgres_store.enqueue_export_job(
-                conversation_id,
-                "refresh_memory",
-                payload,
-            )
+    memory_pending = postgres_store.has_active_export_job(conversation_id, "refresh_memory")
+    if not memory_pending and (latest_memory is None or memory_is_stale):
+        memory_pending = postgres_store.enqueue_export_job(
+            conversation_id,
+            "refresh_memory",
+            payload,
+        )
 
     stored_turn_index = postgres_store.get_conversation_turn_index(conversation_id)
     has_turn_index = bool(stored_turn_index)
-    derived_turn_index = build_turn_index_entries(conversation) if has_turn_index else []
+    derived_turn_index = build_turn_index_entries(conversation)
     turn_index_is_stale = bool(
         stored_turn_index
         and derived_turn_index
         and stored_turn_index[0].get("short_highlight", "").startswith(GENERIC_PASTED_SUMMARY_PREFIXES)
         and stored_turn_index[0].get("short_highlight") != derived_turn_index[0].get("short_highlight")
     )
-    if not has_turn_index or turn_index_is_stale:
-        turn_index_pending = postgres_store.has_active_export_job(conversation_id, "index_turns")
-        if not turn_index_pending:
-            turn_index_pending = postgres_store.enqueue_export_job(
-                conversation_id,
-                "index_turns",
-                payload,
-            )
+    turn_index_is_lagging = len(stored_turn_index) < len(derived_turn_index)
+    turn_index_pending = postgres_store.has_active_export_job(conversation_id, "index_turns")
+    if not turn_index_pending and (not has_turn_index or turn_index_is_stale or turn_index_is_lagging):
+        turn_index_pending = postgres_store.enqueue_export_job(
+            conversation_id,
+            "index_turns",
+            payload,
+        )
 
     if markdown_exports.conversation_exports_missing(conversation_id):
         export_pending = postgres_store.has_active_export_job(conversation_id, "export_markdown")
