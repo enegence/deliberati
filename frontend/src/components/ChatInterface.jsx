@@ -1094,6 +1094,7 @@ export default function ChatInterface({
                   )}
                   {message.stage1 && (
                     <div
+                      id={`conversation-message-${index}-stage1`}
                       className={`stage-selectable-card selectable-card ${getIsSegmentSelected(`segment:${index}:stage1`) ? 'selected' : ''}`}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -1112,6 +1113,7 @@ export default function ChatInterface({
                   )}
                   {message.stage2 && (
                     <div
+                      id={`conversation-message-${index}-stage2`}
                       className={`stage-selectable-card selectable-card ${getIsSegmentSelected(`segment:${index}:stage2`) ? 'selected' : ''}`}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -1134,6 +1136,7 @@ export default function ChatInterface({
                   )}
                   {message.stage3 && (
                     <div
+                      id={`conversation-message-${index}-stage3`}
                       className={`stage-selectable-card selectable-card ${getIsSegmentSelected(`segment:${index}:stage3`) ? 'selected' : ''}`}
                       onClick={(event) => {
                         event.stopPropagation();
