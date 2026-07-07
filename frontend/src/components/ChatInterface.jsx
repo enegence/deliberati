@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
 import Stage3 from './Stage3';
+import StageNavigator from './StageNavigator';
 import HighlightedMarkdown from './HighlightedMarkdown';
 import { renderHighlightedText } from './SearchHighlightText';
 import './ChatInterface.css';
@@ -569,6 +570,7 @@ export default function ChatInterface({
   const overviewPanelRef = useRef(null);
   const overviewScrollRef = useRef(null);
   const transcriptScrollRef = useRef(null);
+  const panelScrollRef = useRef(null);
   const selectionAnchorRef = useRef(null);
   const usagePopoverRef = useRef(null);
 
@@ -1597,7 +1599,13 @@ export default function ChatInterface({
             </header>
 
             <div ref={transcriptScrollRef} className="conversation-panel-body">
-              <div className="conversation-panel-scroll">
+              {viewMode === 'conversation' && conversation?.messages?.length > 0 && (
+                <StageNavigator
+                  messages={conversation.messages}
+                  scrollContainerRef={panelScrollRef}
+                />
+              )}
+              <div ref={panelScrollRef} className="conversation-panel-scroll">
                 {viewMode === 'conversation' ? renderTranscript() : renderWorkbook()}
 
                 {viewMode === 'conversation' && isLoading && (
