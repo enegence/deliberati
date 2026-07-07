@@ -1,0 +1,80 @@
+.stage-navigator {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(6px);
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+  font-size: 12px;
+  user-select: none;
+}
+
+.stage-navigator:hover,
+.stage-navigator:focus-within {
+  opacity: 1;
+}
+
+.stage-navigator-turn-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.stage-navigator-turn-label {
+  font-weight: 600;
+  color: #444;
+  white-space: nowrap;
+}
+
+.stage-navigator-arrow {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: #555;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.stage-navigator-arrow:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.stage-navigator-arrow:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.stage-navigator-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.stage-navigator-stage {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: #333;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.stage-navigator-stage:hover {
+  background: rgba(74, 144, 226, 0.12);
+  color: #2b6cb8;
+}

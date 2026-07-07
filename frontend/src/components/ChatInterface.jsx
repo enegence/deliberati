@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
 import Stage3 from './Stage3';
+import StageNavigator from './StageNavigator';
 import HighlightedMarkdown from './HighlightedMarkdown';
 import { renderHighlightedText } from './SearchHighlightText';
+import { STAGE_LABELS, buildStageAnchorId } from './stageNavModel';
 import './ChatInterface.css';
 
 const EMPTY_ARRAY = [];
@@ -565,10 +567,12 @@ export default function ChatInterface({
   const [isUsageOpen, setIsUsageOpen] = useState(false);
   const messagesEndRef = useRef(null);
   const pendingJumpIndexRef = useRef(null);
+  const pendingJumpAnchorRef = useRef(null);
   const handledJumpRequestRef = useRef(null);
   const overviewPanelRef = useRef(null);
   const overviewScrollRef = useRef(null);
   const transcriptScrollRef = useRef(null);
+  const panelScrollRef = useRef(null);
   const selectionAnchorRef = useRef(null);
   const usagePopoverRef = useRef(null);
 
@@ -603,6 +607,12 @@ export default function ChatInterface({
 
   const scrollToMessage = (messageIndex) => {
     const element = document.getElementById(`conversation-message-${messageIndex}`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const scrollToStageAnchor = (anchorId, fallbackMessageIndex) => {
+    const element = document.getElementById(anchorId)
+      || document.getElementById(`conversation-message-${fallbackMessageIndex}`);
     element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
@@ -727,6 +737,16 @@ export default function ChatInterface({
 
     scrollToMessage(pendingJumpIndexRef.current);
     pendingJumpIndexRef.current = null;
+  }, [conversation]);
+
+  useEffect(() => {
+    if (!pendingJumpAnchorRef.current || !conversation) {
+      return;
+    }
+
+    const { anchorId, messageIndex } = pendingJumpAnchorRef.current;
+    pendingJumpAnchorRef.current = null;
+    scrollToStageAnchor(anchorId, messageIndex);
   }, [conversation]);
 
   useEffect(() => {
@@ -897,6 +917,22 @@ export default function ChatInterface({
     }
 
     await handleJumpToTurn(entry);
+  };
+
+  const handleStageJump = async (entry, stageKey) => {
+    const messageIndex = entry.transcript_offset?.message_index;
+    if (typeof messageIndex !== 'number') {
+      return;
+    }
+
+    const anchorId = buildStageAnchorId(messageIndex, stageKey);
+    if (!conversation) {
+      pendingJumpAnchorRef.current = { anchorId, messageIndex };
+      await onLoadTranscript();
+      return;
+    }
+
+    scrollToStageAnchor(anchorId, messageIndex);
   };
 
   const getMessageSearchHighlight = (messageIndex) => {
@@ -1094,6 +1130,7 @@ export default function ChatInterface({
                   )}
                   {message.stage1 && (
                     <div
+                      id={`conversation-message-${index}-stage1`}
                       className={`stage-selectable-card selectable-card ${getIsSegmentSelected(`segment:${index}:stage1`) ? 'selected' : ''}`}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -1112,6 +1149,7 @@ export default function ChatInterface({
                   )}
                   {message.stage2 && (
                     <div
+                      id={`conversation-message-${index}-stage2`}
                       className={`stage-selectable-card selectable-card ${getIsSegmentSelected(`segment:${index}:stage2`) ? 'selected' : ''}`}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -1134,6 +1172,7 @@ export default function ChatInterface({
                   )}
                   {message.stage3 && (
                     <div
+                      id={`conversation-message-${index}-stage3`}
                       className={`stage-selectable-card selectable-card ${getIsSegmentSelected(`segment:${index}:stage3`) ? 'selected' : ''}`}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -1392,25 +1431,41 @@ export default function ChatInterface({
                           const messageIndex = entry.transcript_offset?.message_index;
                           const isSelected = typeof messageIndex === 'number' && getIsTurnSelected(messageIndex);
                           return (
-                            <button
-                              key={`${entry.turn_number}-${entry.role}`}
-                              className={`overview-turn ${isSelected ? 'selected' : ''}`}
-                              type="button"
-                              onClick={(event) => handleTurnJumpSelection(entry, event)}
-                            >
-                              <div className="overview-turn-meta">
-                                <span className={`overview-turn-role overview-turn-role-${entry.role}`}>
-                                  {entry.role}
-                                </span>
-                                <span>Turn {entry.turn_number}</span>
-                                {formatTurnTimestamp(entry.created_at) && (
-                                  <span className="overview-turn-timestamp">
-                                    {formatTurnTimestamp(entry.created_at)}
+                            <div key={`${entry.turn_number}-${entry.role}`} className="overview-turn-shell">
+                              <button
+                                className={`overview-turn ${isSelected ? 'selected' : ''}`}
+                                type="button"
+                                onClick={(event) => handleTurnJumpSelection(entry, event)}
+                              >
+                                <div className="overview-turn-meta">
+                                  <span className={`overview-turn-role overview-turn-role-${entry.role}`}>
+                                    {entry.role}
                                   </span>
-                                )}
-                              </div>
-                              <div className="overview-turn-highlight">{entry.short_highlight}</div>
-                            </button>
+                                  <span>Turn {entry.turn_number}</span>
+                                  {formatTurnTimestamp(entry.created_at) && (
+                                    <span className="overview-turn-timestamp">
+                                      {formatTurnTimestamp(entry.created_at)}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="overview-turn-highlight">{entry.short_highlight}</div>
+                              </button>
+                              {entry.role === 'assistant' && (
+                                <div className="overview-turn-stage-links">
+                                  {['stage1', 'stage2', 'stage3'].map((stageKey) => (
+                                    <button
+                                      key={stageKey}
+                                      type="button"
+                                      className="overview-turn-stage-link"
+                                      aria-label={`Jump to turn ${entry.turn_number} ${STAGE_LABELS[stageKey].toLowerCase()}`}
+                                      onClick={() => handleStageJump(entry, stageKey)}
+                                    >
+                                      {STAGE_LABELS[stageKey]}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           );
                         })}
                       </div>
@@ -1594,7 +1649,13 @@ export default function ChatInterface({
             </header>
 
             <div ref={transcriptScrollRef} className="conversation-panel-body">
-              <div className="conversation-panel-scroll">
+              {viewMode === 'conversation' && conversation?.messages?.length > 0 && (
+                <StageNavigator
+                  messages={conversation.messages}
+                  scrollContainerRef={panelScrollRef}
+                />
+              )}
+              <div ref={panelScrollRef} className="conversation-panel-scroll">
                 {viewMode === 'conversation' ? renderTranscript() : renderWorkbook()}
 
                 {viewMode === 'conversation' && isLoading && (

@@ -729,3 +729,18 @@ def build_turn_index_entries(conversation: Dict[str, Any]) -> List[Dict[str, Any
         )
 
     return entries
+
+
+def merge_turn_index_entries(
+    stored_entries: List[Dict[str, Any]],
+    derived_entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Prefer stored (worker-written) entries; fill missing turns from derived.
+
+    The derived index always covers the full transcript, so it governs length.
+    """
+    stored_by_turn = {entry["turn_number"]: entry for entry in stored_entries}
+    return [
+        stored_by_turn.get(entry["turn_number"], entry)
+        for entry in derived_entries
+    ]

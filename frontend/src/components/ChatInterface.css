@@ -696,6 +696,7 @@
 }
 
 .conversation-panel-body {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
@@ -1270,4 +1271,30 @@
   .assistant-message::before {
     left: -14px;
   }
+}
+
+.overview-turn-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.overview-turn-stage-links {
+  display: flex;
+  gap: 4px;
+  padding: 0 4px 4px;
+}
+
+.overview-turn-stage-link {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  color: #4a90e2;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
+.overview-turn-stage-link:hover {
+  background: rgba(74, 144, 226, 0.12);
 }
