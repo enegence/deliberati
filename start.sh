@@ -155,7 +155,7 @@ cd "$PROJECT_ROOT" || exit 1
 
 ALLOWED_ORIGINS="http://localhost:$FRONTEND_PORT" \
 uv run python -m uvicorn backend.main:app \
-    --host 127.0.0.1 \
+    --host 0.0.0.0 \
     --port "$BACKEND_PORT" \
     --reload &
 BACKEND_PID=$!
@@ -172,7 +172,8 @@ cd "$PROJECT_ROOT/frontend" || { echo "❌ Error: frontend directory not found";
 
 VITE_API_BASE_URL="http://localhost:$BACKEND_PORT" \
 npm run dev -- \
-    --port "$FRONTEND_PORT" &
+    --port "$FRONTEND_PORT" \
+    --host 0.0.0.0 &
 FRONTEND_PID=$!
 
 # ==================== Wait for Servers ====================
