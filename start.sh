@@ -149,13 +149,26 @@ ensure_postgres() {
 
 ensure_postgres
 
+# ==================== Dev Server Bind Host ====================
+# Loopback everywhere by default (safe, no LAN exposure / firewall prompts).
+# Under WSL, bind all interfaces so the Windows-host browser can reach the
+# dev servers. Override explicitly with DEV_BIND_HOST=0.0.0.0 (or 127.0.0.1).
+if [ -z "${DEV_BIND_HOST:-}" ]; then
+    if grep -qiE "(microsoft|wsl)" /proc/version 2>/dev/null; then
+        DEV_BIND_HOST=0.0.0.0
+    else
+        DEV_BIND_HOST=127.0.0.1
+    fi
+fi
+echo "✅ Dev servers will bind to: $DEV_BIND_HOST"
+
 # ==================== Start Backend ====================
 echo "Starting Backend on http://localhost:$BACKEND_PORT ..."
 cd "$PROJECT_ROOT" || exit 1
 
 ALLOWED_ORIGINS="http://localhost:$FRONTEND_PORT" \
 uv run python -m uvicorn backend.main:app \
-    --host 0.0.0.0 \
+    --host "$DEV_BIND_HOST" \
     --port "$BACKEND_PORT" \
     --reload &
 BACKEND_PID=$!
@@ -173,7 +186,7 @@ cd "$PROJECT_ROOT/frontend" || { echo "❌ Error: frontend directory not found";
 VITE_API_BASE_URL="http://localhost:$BACKEND_PORT" \
 npm run dev -- \
     --port "$FRONTEND_PORT" \
-    --host 0.0.0.0 &
+    --host "$DEV_BIND_HOST" &
 FRONTEND_PID=$!
 
 # ==================== Wait for Servers ====================
